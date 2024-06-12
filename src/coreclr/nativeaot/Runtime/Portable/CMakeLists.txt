@@ -41,3 +41,10 @@ if (NOT CLR_CMAKE_TARGET_ARCH_WASM)
   install_static_library(standalonegc-enabled aotsdk nativeaot)
 endif()
 
+if (CLR_CMAKE_TARGET_WASI)
+  install(
+    FILES ../../../../libraries/System.Net.Http/src/System/Net/Http/WasiHttpHandler/WasiHttpWorld_component_type.wit
+    DESTINATION aotsdk
+    COMPONENT nativeaot
+  )
+endif()

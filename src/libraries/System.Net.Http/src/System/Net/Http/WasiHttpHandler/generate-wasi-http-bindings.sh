@@ -11,8 +11,7 @@ set -ex
 #   [cargo](https://rustup.rs/)
 #   [curl](https://curl.se/download.html)
 
-# TODO: Update to the next crates.io release containing fa19e08a884ec62f95191319d8d296874424c736:
-cargo install --locked --no-default-features --features csharp --git https://github.com/bytecodealliance/wit-bindgen --rev fa19e08a884ec62f95191319d8d296874424c736 wit-bindgen-cli
+cargo install --locked --no-default-features --features csharp --version 0.28.0 wit-bindgen-cli
 curl -OL https://github.com/WebAssembly/wasi-http/archive/refs/tags/v0.2.0.tar.gz
 tar xzf v0.2.0.tar.gz
 cat >wasi-http-0.2.0/wit/world.wit <<EOF

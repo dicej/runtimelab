@@ -128,7 +128,7 @@ The .NET Foundation licenses this file to you under the MIT license.
     <WasmOptimizationSetting Condition="$(Optimize) == 'true' and $(OptimizationPreference) == 'Size'">-Oz</WasmOptimizationSetting>
 
     <IlcLlvmTarget Condition="'$(_targetOS)' == 'browser'">wasm32-unknown-emscripten</IlcLlvmTarget>
-    <IlcLlvmTarget Condition="'$(_targetOS)' == 'wasi'">wasm32-unknown-wasi</IlcLlvmTarget>
+    <IlcLlvmTarget Condition="'$(_targetOS)' == 'wasi'">wasm32-unknown-wasip2</IlcLlvmTarget>
     <IlcWasmStackSize>1048576</IlcWasmStackSize> <!-- 1MB -->
     <IlcWasmStackSize Condition="'$(EmccStackSize)' != ''">$(EmccStackSize)</IlcWasmStackSize>
     <IlcWasmGlobalBase>1024</IlcWasmGlobalBase> <!-- This value is also hardcoded in the compiler -->
@@ -590,6 +590,7 @@ The .NET Foundation licenses this file to you under the MIT license.
       <CustomLinkerArg Include="-Wl,--global-base=$(IlcWasmGlobalBase)" />
       <CustomLinkerArg Include="-Wl,-z,stack-size=$(IlcWasmStackSize)" />
       <CustomLinkerArg Include="-mexec-model=reactor" Condition="'$(NativeLib)' == 'Shared'" />
+      <CustomLinkerArg Include="-Wl,--component-type,&quot;$(IlcSdkPath.Replace(&quot;\&quot;, &quot;/&quot;))WasiHttpWorld_component_type.wit&quot;" />
     </ItemGroup>
 
     <ItemGroup>

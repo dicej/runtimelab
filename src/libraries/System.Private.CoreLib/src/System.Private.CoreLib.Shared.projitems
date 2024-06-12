@@ -2808,3 +2808,4 @@
     <Compile Include="$(MSBuildThisFileDirectory)System\Threading\Wasi\WasiPollWorld.wit.imports.wasi.io.v0_2_0.PollInterop.cs" />
   </ItemGroup>
 </Project>
+
