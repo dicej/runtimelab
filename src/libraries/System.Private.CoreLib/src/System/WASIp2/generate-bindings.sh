@@ -24,4 +24,4 @@ world wasi-poll {
 }
 EOF
 wit-bindgen c-sharp -w wasi-poll -r native-aot --internal --skip-support-files wasi-http-0.2.0/wit
-rm -r wasi-http-0.2.0 v0.2.0.tar.gz
+rm -r wasi-http-0.2.0 v0.2.0.tar.gz WasiHttpWorld_wasm_import_linkage_attribute.cs

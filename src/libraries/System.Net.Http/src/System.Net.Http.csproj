@@ -521,5 +521,4 @@
   <ItemGroup>
     <None Include="Resources\SR.resx" />
   </ItemGroup>
-
 </Project>

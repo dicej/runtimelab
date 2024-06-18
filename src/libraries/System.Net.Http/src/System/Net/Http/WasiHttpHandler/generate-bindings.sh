@@ -23,5 +23,5 @@ world wasi-http {
   import outgoing-handler;
 }
 EOF
-wit-bindgen c-sharp -w wasi-http -r native-aot --internal --skip-support-files wasi-http-0.2.0/wit
+wit-bindgen c-sharp -w wasi-http -r native-aot --internal wasi-http-0.2.0/wit
 rm -r wasi-http-0.2.0 v0.2.0.tar.gz
