@@ -586,7 +586,7 @@ The .NET Foundation licenses this file to you under the MIT license.
       <CustomLinkerArg Include="-Wl,--global-base=$(IlcWasmGlobalBase)" />
       <CustomLinkerArg Include="-Wl,-z,stack-size=$(IlcWasmStackSize)" />
       <CustomLinkerArg Include="-mexec-model=reactor" Condition="'$(NativeLib)' == 'Shared'" />
-      <CustomLinkerArg Include="-Wl,--whole-archive $(IlcSdkPath)libWasiHttp.a -Wl,--no-whole-archive" />
+      <CustomLinkerArg Include="-Wl,--whole-archive &quot;$(IlcSdkPath.Replace(&quot;\&quot;, &quot;/&quot;))libWasiHttp.a&quot; -Wl,--no-whole-archive" />
     </ItemGroup>
 
     <ItemGroup>
