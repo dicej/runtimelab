@@ -41,7 +41,7 @@ if (NOT CLR_CMAKE_TARGET_ARCH_WASM)
   install_static_library(standalonegc-enabled aotsdk nativeaot)
 endif()
 
-if (CLR_CMAKE_TARGET_ARCH_WASM)
+if (CLR_CMAKE_TARGET_WASI)
   add_library(WasiHttp STATIC
     ../../../../libraries/System.Net.Http/src/System/Net/Http/WasiHttpHandler/WasiHttpWorld_cabi_realloc.c
     ../../../../libraries/System.Net.Http/src/System/Net/Http/WasiHttpHandler/WasiHttpWorld_component_type.o
