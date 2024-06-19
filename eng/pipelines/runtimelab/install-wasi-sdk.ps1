@@ -17,7 +17,7 @@ cp wasi-sdk/share/wasi-sysroot/include/wasm32-wasi-threads/pthread.h wasi-sdk/sh
 # [bug](https://github.com/bytecodealliance/wasm-component-ld/issues/22) which
 # has been fixed in a v0.5.3 of that utility, so we upgrade it here.
 
-Invoke-WebRequest -Uri https://github.com/bytecodealliance/wasm-component-ld/releases/download/v0.5.3/wasm-component-ld-v0.5.3-x86_64-windows.zip
+Invoke-WebRequest -Uri https://github.com/bytecodealliance/wasm-component-ld/releases/download/v0.5.3/wasm-component-ld-v0.5.3-x86_64-windows.zip -OutFile wasm-component-ld-v0.5.3-x86_64-windows.zip
 
 Expand-Archive -LiteralPath wasm-component-ld-v0.5.3-x86_64-windows.zip -DestinationPath .
 cp wasm-component-ld-v0.5.3-x86_64-windows/wasm-component-ld.exe wasi-sdk/bin
