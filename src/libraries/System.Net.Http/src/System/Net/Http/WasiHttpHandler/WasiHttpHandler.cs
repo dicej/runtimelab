@@ -6,6 +6,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Security;
+using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
@@ -213,15 +214,9 @@ namespace System.Net.Http
             foreach ((var key, var value) in responseHeaders)
             {
                 var valueString = Encoding.UTF8.GetString(value);
-                // TODO: What's the right way to determine which headers go
-                // where?  Is there an easier way than explicitly enumerating
-                // all the possibilities in
-                // https://learn.microsoft.com/en-us/dotnet/api/system.net.http.headers.httpcontentheaders?view=net-8.0#properties
-                // ?
                 if (
-                    key.StartsWith("content-", true, null)
-                    || string.Compare(key, "last-modified", true, null) == 0
-                    || string.Compare(key, "expires", true, null) == 0
+                    HeaderDescriptor.TryGet(key, out HeaderDescriptor descriptor)
+                    && (descriptor.HeaderType & HttpHeaderType.Content) != 0
                 )
                 {
                     response.Content.Headers.Add(key, valueString);
