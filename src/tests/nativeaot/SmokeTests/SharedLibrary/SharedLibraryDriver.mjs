@@ -1,37 +1,33 @@
-import { readFile } from 'node:fs/promises';
-import { WASI } from 'wasi';
-import { argv, env } from 'node:process';
+import { readFile, writeFile } from 'node:fs/promises';
+import { transpile } from '@bytecodealliance/jco';
 
-const wasi = new WASI({
-  version: 'preview1',
-  args: argv,
-  env
+const base = import.meta.url;
+const component = await readFile(new URL("./SharedLibrary.wasm", base));
+const transpiled = await transpile(component, {
+    name: "shared-library",
+    typescript: false,
 });
+await writeFile(new URL("./shared-library.core.wasm", base), transpiled.files["shared-library.core.wasm"]);
+await writeFile(new URL("./shared-library.core2.wasm", base), transpiled.files["shared-library.core2.wasm"]);
+await writeFile(new URL("./shared-library.mjs", base), transpiled.files["shared-library.js"]);
+const instance = await import(new URL("./shared-library.mjs", base));
 
-const wasm = await WebAssembly.compile(  
-  await readFile(new URL("./SharedLibrary.wasm", import.meta.url)),
-);
-
-const instance = await WebAssembly.instantiate(wasm, wasi.getImportObject());
-
-wasi.initialize(instance);
-
-if (instance.exports.ReturnsPrimitiveInt() != 10)
+if (instance.returnsPrimitiveInt() != 10)
     process.exit(1);
 
-if (instance.exports.ReturnsPrimitiveBool() != 1)
+if (instance.returnsPrimitiveBool() != 1)
     process.exit(2);
 
-if (instance.exports.ReturnsPrimitiveChar() != 97) // 'a'
+if (instance.returnsPrimitiveChar() != 'a')
     process.exit(3);
 
 // As long as no unmanaged exception is thrown managed class loaders were initialized successfully.
-instance.exports.EnsureManagedClassLoaders();
+instance.ensureManagedClassLoaders();
 
-if (instance.exports.CheckSimpleGCCollect() != 100)
+if (instance.checkSimpleGcCollect() != 100)
     process.exit(4);
 
-if (instance.exports.CheckSimpleExceptionHandling() != 100)
+if (instance.checkSimpleExceptionHandling() != 100)
    process.exit(5);
 
 process.exit(100);

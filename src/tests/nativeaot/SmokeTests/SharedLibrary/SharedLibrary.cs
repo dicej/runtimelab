@@ -37,6 +37,11 @@ namespace SharedLibrary
         [UnmanagedCallersOnly(EntryPoint = "CheckSimpleExceptionHandling", CallConvs = new Type[] { typeof(CallConvStdcall) })]
         public static int CheckSimpleExceptionHandling()
         {
+            return DoCheckSimpleExceptionHandling();
+        }
+
+        public static int DoCheckSimpleExceptionHandling()
+        {
             int result = 10;
 
             try
@@ -80,6 +85,11 @@ namespace SharedLibrary
         [UnmanagedCallersOnly(EntryPoint = "CheckSimpleGCCollect", CallConvs = new Type[] { typeof(CallConvStdcall) })]
         public static int CheckSimpleGCCollect()
         {
+            return DoCheckSimpleGCCollect();
+        }
+
+        public static int DoCheckSimpleGCCollect()
+        {
             string myString = string.Format("Hello {0}", "world");
 
             MakeGarbage();
@@ -90,6 +100,42 @@ namespace SharedLibrary
             GC.Collect();
 
             return s_collected ? (myString == "Hello world" ? 100 : 1) : 2;
+        }
+    }
+}
+
+// Implements the component model interface defined in wit/world.wit
+namespace LibraryWorld {
+    public class LibraryWorldImpl : ILibraryWorld {
+        public static int ReturnsPrimitiveInt()
+        {
+            return 10;
+        }
+
+        public static bool ReturnsPrimitiveBool()
+        {
+            return true;
+        }
+
+        public static uint ReturnsPrimitiveChar()
+        {
+            return (uint) 'a';
+        }
+
+        public static void EnsureManagedClassLoaders()
+        {
+            Random random = new Random();
+            random.Next();
+        }
+
+        public static int CheckSimpleExceptionHandling()
+        {
+            return SharedLibrary.ClassLibrary.DoCheckSimpleExceptionHandling();
+        }
+
+        public static int CheckSimpleGcCollect()
+        {
+            return SharedLibrary.ClassLibrary.DoCheckSimpleGCCollect();
         }
     }
 }

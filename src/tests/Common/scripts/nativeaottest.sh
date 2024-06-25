@@ -12,11 +12,13 @@
 
 exename=$(basename $2 .dll)
 wasm="$1/native/${exename}.wasm"
+mjs="$1/native/${exename}.mjs"
 
-if [ -e "$wasm" ]; then
-  shift 2
-  echo wasmtime run -S http "$wasm" "$@"
-  wasmtime run -S http "$wasm" "$@"
+if [ -e "$mjs" ]; then
+  node "$mjs" "${@:3}"
+elif [ -e "$wasm" ]; then
+  echo wasmtime run -S http "$wasm" "${@:3}"
+  wasmtime run -S http "$wasm" "${@:3}"
 else
   chmod +x $1/native/$exename
   $_DebuggerFullPath $1/native/$exename "${@:3}"

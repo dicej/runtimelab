@@ -92,7 +92,7 @@ internal static class ReflectionTest
         TestBaseOnlyUsedFromCode.Run();
         TestEntryPoint.Run();
 
-        return 100;
+        return 0;
     }
 
     class TestReflectionInvoke

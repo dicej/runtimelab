@@ -225,6 +225,8 @@ jobs:
         displayName: Install wasi-sdk
       - script: call $(Build.SourcesDirectory)/eng/pipelines/runtimelab/install-wasmtime.cmd $(Build.SourcesDirectory)\wasm-tools
         displayName: Install wasmtime
+      - script: npm install -g @bytecodealliance/jco
+        displayName: Install jco
 
     - ${{ if or(eq(parameters.platform, 'browser_wasm_win'), and(eq(parameters.platform, 'wasi_wasm_win'), not(eq(parameters.runtimeFlavor, 'coreclr')))) }}:
       # Update machine certs

@@ -30,6 +30,7 @@ cp SharedLibraryDriver native/SharedLibrary
 
   <ItemGroup>
     <Compile Include="SharedLibrary.cs" />
+    <Compile Include="Library.cs" />
   </ItemGroup>
 
   <PropertyGroup>
@@ -55,5 +56,22 @@ cp SharedLibraryDriver$(NativeExtension) native/SharedLibrary$(NativeExtension)
 
   <ItemGroup Condition="'$(WasiReactorTestUsingNodeJS)' == 'true'">
     <Content Include="SharedLibraryDriver.mjs" CopyToOutputDirectory="PreserveNewest" />
+    <NativeLibrary Include="$(MSBuildProjectDirectory)/LibraryWorld_component_type.o" />
+    <NativeLibrary Include="$(MSBuildProjectDirectory)/LibraryWorld_cabi_realloc.o" />
   </ItemGroup>
+
+  <Target Name="CheckWasmSdks" Condition="'$(WasiReactorTestUsingNodeJS)' == 'true'">
+    <Error Text="WASI_SDK_PATH not set; please install WASI-SDK 22 and set WASI_SDK_PATH to the path where it is installed."
+           Condition="'$(WASI_SDK_PATH)' == ''" />
+  </Target>
+
+  <Target Name="CompileCabiRealloc"
+          BeforeTargets="IlcCompile"
+          DependsOnTargets="CheckWasmSdks"
+          Inputs="$(MSBuildProjectDirectory)/LibraryWorld_cabi_realloc.c"
+          Outputs="$(MSBuildProjectDirectory)/LibraryWorld_cabi_realloc.o"
+          Condition="'$(WasiReactorTestUsingNodeJS)' == 'true'"
+          >
+    <Exec Command="$(WASI_SDK_PATH)/bin/clang &quot;$(MSBuildProjectDirectory)/LibraryWorld_cabi_realloc.c&quot; -c -o &quot;$(MSBuildProjectDirectory)/LibraryWorld_cabi_realloc.o&quot;"/>
+  </Target>
 </Project>
