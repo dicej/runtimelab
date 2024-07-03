@@ -5,8 +5,8 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
-using System.Net.Security;
 using System.Net.Http.Headers;
+using System.Net.Security;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
@@ -173,6 +173,16 @@ namespace System.Net.Http
                     headers.Add((pair.Key, Encoding.UTF8.GetBytes(value)));
                 }
             }
+            if (request.Content is not null)
+            {
+                foreach (var pair in request.Content.Headers)
+                {
+                    foreach (var value in pair.Value)
+                    {
+                        headers.Add((pair.Key, Encoding.UTF8.GetBytes(value)));
+                    }
+                }
+            }
 
             var outgoingRequest = new ITypes.OutgoingRequest(ITypes.Fields.FromList(headers));
             outgoingRequest.SetScheme(scheme);
@@ -234,23 +244,167 @@ namespace System.Net.Http
             ITypes.OutgoingRequest request
         )
         {
-            var future = OutgoingHandlerInterop.Handle(request, null);
+            ITypes.FutureIncomingResponse future;
+            try
+            {
+                future = OutgoingHandlerInterop.Handle(request, null);
+            }
+            catch (WasiHttpWorld.WitException e)
+            {
+                var message = ErrorCodeToString((ITypes.ErrorCode)e.Value);
+                throw new Exception($"Request Error: {message}");
+            }
 
             while (true)
             {
                 var response = future.Get();
                 if (response is not null)
                 {
-                    return (
+                    var result = (
                         (Result<Result<ITypes.IncomingResponse, ITypes.ErrorCode>, None>)response
-                    )
-                        .AsOk
-                        .AsOk;
+                    ).AsOk;
+
+                    if (result.IsOk)
+                    {
+                        return result.AsOk;
+                    }
+                    else
+                    {
+                        var message = ErrorCodeToString(result.AsErr);
+                        throw new Exception($"Request Error: {message}");
+                    }
                 }
                 else
                 {
                     await WasiEventLoop.Register(future.Subscribe()).ConfigureAwait(false);
                 }
+            }
+        }
+
+        private static string ErrorCodeToString(ITypes.ErrorCode code)
+        {
+            // TODO: include payload data in result where applicable
+            switch (code.Tag)
+            {
+                case ITypes.ErrorCode.DNS_TIMEOUT:
+                    return "DNS_TIMEOUT";
+
+                case ITypes.ErrorCode.DNS_ERROR:
+                    return "DNS_ERROR";
+
+                case ITypes.ErrorCode.DESTINATION_NOT_FOUND:
+                    return "DESTINATION_NOT_FOUND";
+
+                case ITypes.ErrorCode.DESTINATION_UNAVAILABLE:
+                    return "DESTINATION_UNAVAILABLE";
+
+                case ITypes.ErrorCode.DESTINATION_IP_PROHIBITED:
+                    return "DESTINATION_IP_PROHIBITED";
+
+                case ITypes.ErrorCode.DESTINATION_IP_UNROUTABLE:
+                    return "DESTINATION_IP_UNROUTABLE";
+
+                case ITypes.ErrorCode.CONNECTION_REFUSED:
+                    return "CONNECTION_REFUSED";
+
+                case ITypes.ErrorCode.CONNECTION_TERMINATED:
+                    return "CONNECTION_TERMINATED";
+
+                case ITypes.ErrorCode.CONNECTION_TIMEOUT:
+                    return "CONNECTION_TIMEOUT";
+
+                case ITypes.ErrorCode.CONNECTION_READ_TIMEOUT:
+                    return "CONNECTION_READ_TIMEOUT";
+
+                case ITypes.ErrorCode.CONNECTION_WRITE_TIMEOUT:
+                    return "CONNECTION_WRITE_TIMEOUT";
+
+                case ITypes.ErrorCode.CONNECTION_LIMIT_REACHED:
+                    return "CONNECTION_LIMIT_REACHED";
+
+                case ITypes.ErrorCode.TLS_PROTOCOL_ERROR:
+                    return "TLS_PROTOCOL_ERROR";
+
+                case ITypes.ErrorCode.TLS_CERTIFICATE_ERROR:
+                    return "TLS_CERTIFICATE_ERROR";
+
+                case ITypes.ErrorCode.TLS_ALERT_RECEIVED:
+                    return "TLS_ALERT_RECEIVED";
+
+                case ITypes.ErrorCode.HTTP_REQUEST_DENIED:
+                    return "HTTP_REQUEST_DENIED";
+
+                case ITypes.ErrorCode.HTTP_REQUEST_LENGTH_REQUIRED:
+                    return "HTTP_REQUEST_LENGTH_REQUIRED";
+
+                case ITypes.ErrorCode.HTTP_REQUEST_BODY_SIZE:
+                    return "HTTP_REQUEST_BODY_SIZE";
+
+                case ITypes.ErrorCode.HTTP_REQUEST_METHOD_INVALID:
+                    return "HTTP_REQUEST_METHOD_INVALID";
+
+                case ITypes.ErrorCode.HTTP_REQUEST_URI_INVALID:
+                    return "HTTP_REQUEST_URI_INVALID";
+
+                case ITypes.ErrorCode.HTTP_REQUEST_URI_TOO_LONG:
+                    return "HTTP_REQUEST_URI_TOO_LONG";
+
+                case ITypes.ErrorCode.HTTP_REQUEST_HEADER_SECTION_SIZE:
+                    return "HTTP_REQUEST_HEADER_SECTION_SIZE";
+
+                case ITypes.ErrorCode.HTTP_REQUEST_HEADER_SIZE:
+                    return "HTTP_REQUEST_HEADER_SIZE";
+
+                case ITypes.ErrorCode.HTTP_REQUEST_TRAILER_SECTION_SIZE:
+                    return "HTTP_REQUEST_TRAILER_SECTION_SIZE";
+
+                case ITypes.ErrorCode.HTTP_REQUEST_TRAILER_SIZE:
+                    return "HTTP_REQUEST_TRAILER_SIZE";
+
+                case ITypes.ErrorCode.HTTP_RESPONSE_INCOMPLETE:
+                    return "HTTP_RESPONSE_INCOMPLETE";
+
+                case ITypes.ErrorCode.HTTP_RESPONSE_HEADER_SECTION_SIZE:
+                    return "HTTP_RESPONSE_HEADER_SECTION_SIZE";
+
+                case ITypes.ErrorCode.HTTP_RESPONSE_HEADER_SIZE:
+                    return "HTTP_RESPONSE_HEADER_SIZE";
+
+                case ITypes.ErrorCode.HTTP_RESPONSE_BODY_SIZE:
+                    return "HTTP_RESPONSE_BODY_SIZE";
+
+                case ITypes.ErrorCode.HTTP_RESPONSE_TRAILER_SECTION_SIZE:
+                    return "HTTP_RESPONSE_TRAILER_SECTION_SIZE";
+
+                case ITypes.ErrorCode.HTTP_RESPONSE_TRAILER_SIZE:
+                    return "HTTP_RESPONSE_TRAILER_SIZE";
+
+                case ITypes.ErrorCode.HTTP_RESPONSE_TRANSFER_CODING:
+                    return "HTTP_RESPONSE_TRANSFER_CODING";
+
+                case ITypes.ErrorCode.HTTP_RESPONSE_CONTENT_CODING:
+                    return "HTTP_RESPONSE_CONTENT_CODING";
+
+                case ITypes.ErrorCode.HTTP_RESPONSE_TIMEOUT:
+                    return "HTTP_RESPONSE_TIMEOUT";
+
+                case ITypes.ErrorCode.HTTP_UPGRADE_FAILED:
+                    return "HTTP_UPGRADE_FAILED";
+
+                case ITypes.ErrorCode.HTTP_PROTOCOL_ERROR:
+                    return "HTTP_PROTOCOL_ERROR";
+
+                case ITypes.ErrorCode.LOOP_DETECTED:
+                    return "LOOP_DETECTED";
+
+                case ITypes.ErrorCode.CONFIGURATION_ERROR:
+                    return "CONFIGURATION_ERROR";
+
+                case ITypes.ErrorCode.INTERNAL_ERROR:
+                    return "INTERNAL_ERROR";
+
+                default:
+                    return $"{code.Tag}";
             }
         }
 

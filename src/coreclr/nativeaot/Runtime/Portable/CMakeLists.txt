@@ -43,8 +43,8 @@ endif()
 
 if (CLR_CMAKE_TARGET_WASI)
   add_library(WasiHttp STATIC
-    ../../../../libraries/System.Net.Http/src/System/Net/Http/WasiHttpHandler/WasiHttpWorld_cabi_realloc.c
     ../../../../libraries/System.Net.Http/src/System/Net/Http/WasiHttpHandler/WasiHttpWorld_component_type.o
   )
+  set_target_properties(WasiHttp PROPERTIES LINKER_LANGUAGE C)
   install_static_library(WasiHttp aotsdk nativeaot)
 endif()

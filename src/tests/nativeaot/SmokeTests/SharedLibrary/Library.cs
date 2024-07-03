@@ -13,6 +13,8 @@ using System.Diagnostics.CodeAnalysis;
 namespace LibraryWorld {
 
     public interface ILibraryWorld {
+        static abstract void TestHttp(ushort port);
+
         static abstract int ReturnsPrimitiveInt();
 
         static abstract bool ReturnsPrimitiveBool();
@@ -83,6 +85,13 @@ namespace LibraryWorld {
     namespace exports {
         public static class LibraryWorld
         {
+
+            [UnmanagedCallersOnly(EntryPoint = "test-http")]
+            public static unsafe void wasmExportTestHttp(int p0) {
+
+                LibraryWorldImpl.TestHttp((((ushort)p0)));
+
+            }
 
             [UnmanagedCallersOnly(EntryPoint = "returns-primitive-int")]
             public static unsafe int wasmExportReturnsPrimitiveInt() {

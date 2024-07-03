@@ -2,8 +2,12 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using System.Diagnostics;
+using System.Net.Http;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace SharedLibrary
 {
@@ -107,6 +111,33 @@ namespace SharedLibrary
 // Implements the component model interface defined in wit/world.wit
 namespace LibraryWorld {
     public class LibraryWorldImpl : ILibraryWorld {
+        public static void TestHttp(ushort port)
+        {
+            var task = TestHttpAsync(port);
+            while (!task.IsCompleted)
+            {
+                WasiEventLoop.Dispatch();
+            }
+            var exception = task.Exception;
+            if (exception is not null)
+            {
+                throw exception;
+            }
+        }
+
+        private static async Task TestHttpAsync(ushort port)
+        {
+            using var client = new HttpClient();
+            client.Timeout = Timeout.InfiniteTimeSpan;
+
+            var url = $"http://127.0.0.1:{port}/hello";
+            var response = await client.GetAsync(url);
+            response.EnsureSuccessStatusCode();
+            Debug.Assert(4 == response.Content.Headers.ContentLength);
+            Debug.Assert("text/plain".Equals(response.Content.Headers.ContentType));
+            Debug.Assert("hola".Equals(await response.Content.ReadAsStringAsync()));
+        }
+
         public static int ReturnsPrimitiveInt()
         {
             return 10;
@@ -136,6 +167,16 @@ namespace LibraryWorld {
         public static int CheckSimpleGcCollect()
         {
             return SharedLibrary.ClassLibrary.DoCheckSimpleGCCollect();
+        }
+    }
+
+    internal static class WasiEventLoop {
+        internal static void Dispatch()
+        {
+            CallDispatch((Thread)null!);
+
+            [UnsafeAccessor(UnsafeAccessorKind.StaticMethod, Name = "Dispatch")]
+            static extern void CallDispatch(Thread t);
         }
     }
 }
