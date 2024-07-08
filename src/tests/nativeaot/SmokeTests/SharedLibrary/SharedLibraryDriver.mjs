@@ -1,6 +1,7 @@
 import { Worker, parentPort, isMainThread } from 'node:worker_threads';
 import { readFile, writeFile } from 'node:fs/promises';
 import { transpile } from '@bytecodealliance/jco';
+import { _setPreopens } from '@bytecodealliance/preview2-shim/filesystem';
 import * as http from 'node:http';
 
 // Note that `jco` implements `wasi:io` by synchronously dispatching to worker
@@ -20,6 +21,7 @@ if (isMainThread) {
     await writeFile(new URL("./shared-library.core2.wasm", base), transpiled.files["shared-library.core2.wasm"]);
     await writeFile(new URL("./shared-library.core3.wasm", base), transpiled.files["shared-library.core3.wasm"]);
     await writeFile(new URL("./shared-library.mjs", base), transpiled.files["shared-library.js"]);
+    _setPreopens([]);
     const instance = await import(new URL("./shared-library.mjs", base));
 
     // Spawn a worker thread to run the HTTP server and feed the port number
