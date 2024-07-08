@@ -2,11 +2,10 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Collections.Generic;
-using System.Threading;
 using System.Threading.Tasks;
 using WasiPollWorld.wit.imports.wasi.io.v0_2_0;
 
-namespace System
+namespace System.Threading
 {
     internal static class WasiEventLoop
     {
