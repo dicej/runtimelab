@@ -109,8 +109,10 @@ namespace SharedLibrary
 }
 
 // Implements the component model interface defined in wit/world.wit
-namespace LibraryWorld {
-    public class LibraryWorldImpl : ILibraryWorld {
+namespace LibraryWorld
+{
+    public class LibraryWorldImpl : ILibraryWorld
+    {
         public static void TestHttp(ushort port)
         {
             var task = TestHttpAsync(port);
@@ -133,9 +135,16 @@ namespace LibraryWorld {
             var url = $"http://127.0.0.1:{port}/hello";
             var response = await client.GetAsync(url);
             response.EnsureSuccessStatusCode();
-            Debug.Assert(4 == response.Content.Headers.ContentLength);
-            Debug.Assert("text/plain".Equals(response.Content.Headers.ContentType));
-            Debug.Assert("hola".Equals(await response.Content.ReadAsStringAsync()));
+            Trace.Assert(
+                4 == response.Content.Headers.ContentLength,
+                $"unexpected content length: {response.Content.Headers.ContentLength}"
+            );
+            Trace.Assert(
+                "text/plain".Equals(response.Content.Headers.ContentType.ToString()),
+                $"unexpected content type: \"{response.Content.Headers.ContentType}\""
+            );
+            var content = await response.Content.ReadAsStringAsync();
+            Trace.Assert("hola".Equals(content), $"unexpected content: \"{content}\"");
         }
 
         public static int ReturnsPrimitiveInt()
@@ -150,7 +159,7 @@ namespace LibraryWorld {
 
         public static uint ReturnsPrimitiveChar()
         {
-            return (uint) 'a';
+            return (uint)'a';
         }
 
         public static void EnsureManagedClassLoaders()
@@ -170,7 +179,8 @@ namespace LibraryWorld {
         }
     }
 
-    internal static class WasiEventLoop {
+    internal static class WasiEventLoop
+    {
         internal static void Dispatch()
         {
             CallDispatch((Thread)null!);
