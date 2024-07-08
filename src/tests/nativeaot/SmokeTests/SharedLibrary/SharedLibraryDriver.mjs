@@ -59,21 +59,28 @@ if (isMainThread) {
 } else {
     // Run the HTTP server
     const server = http.createServer((req, res) => {
-        let status;
-        let body;
-        if (req.method === "GET" && req.url === "/hello") {
-            status = 200;
-            body = "hola";
+        if (req.method === "POST" && req.url === "/echo") {
+            res.writeHead(200, req.headers);
+            req.pipe(res).on("finish", () => {
+                res.end();
+            });
         } else {
-            status = 400;
-            body = "Bad Request";
+            let status;
+            let body;
+            if (req.method === "GET" && req.url === "/hello") {
+                status = 200;
+                body = "hola";
+            } else {
+                status = 400;
+                body = "Bad Request";
+            }
+            res
+                .writeHead(status, {
+                    "content-length": Buffer.byteLength(body),
+                    "content-type": "text/plain",
+                })
+                .end(body);
         }
-        res
-            .writeHead(status, {
-                "content-length": Buffer.byteLength(body),
-                "content-type": "text/plain",
-            })
-            .end(body);
     });
     server.listen(() => {
         parentPort.postMessage(server.address().port);

@@ -129,7 +129,44 @@ namespace System.Net.Http
                 throw new ArgumentException();
             }
 
+            var requestMethod = request.Method.ToString();
             var uri = request.RequestUri;
+
+            ITypes.Method method;
+            switch (requestMethod)
+            {
+                case "":
+                case "GET":
+                    method = ITypes.Method.get();
+                    break;
+                case "HEAD":
+                    method = ITypes.Method.head();
+                    break;
+                case "POST":
+                    method = ITypes.Method.post();
+                    break;
+                case "PUT":
+                    method = ITypes.Method.put();
+                    break;
+                case "DELETE":
+                    method = ITypes.Method.delete();
+                    break;
+                case "CONNECT":
+                    method = ITypes.Method.connect();
+                    break;
+                case "OPTIONS":
+                    method = ITypes.Method.options();
+                    break;
+                case "TRACE":
+                    method = ITypes.Method.trace();
+                    break;
+                case "PATCH":
+                    method = ITypes.Method.patch();
+                    break;
+                default:
+                    method = ITypes.Method.other(requestMethod);
+                    break;
+            }
 
             ITypes.Scheme scheme;
             switch (uri.Scheme)
@@ -185,6 +222,7 @@ namespace System.Net.Http
             }
 
             var outgoingRequest = new ITypes.OutgoingRequest(ITypes.Fields.FromList(headers));
+            outgoingRequest.SetMethod(method);
             outgoingRequest.SetScheme(scheme);
             outgoingRequest.SetAuthority(authority);
             outgoingRequest.SetPathWithQuery(uri.PathAndQuery);

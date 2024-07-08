@@ -3,7 +3,10 @@
 
 using System;
 using System.Diagnostics;
+using System.IO;
+using System.Linq;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -132,19 +135,44 @@ namespace LibraryWorld
             using var client = new HttpClient();
             client.Timeout = Timeout.InfiniteTimeSpan;
 
-            var url = $"http://127.0.0.1:{port}/hello";
-            var response = await client.GetAsync(url);
-            response.EnsureSuccessStatusCode();
-            Trace.Assert(
-                4 == response.Content.Headers.ContentLength,
-                $"unexpected content length: {response.Content.Headers.ContentLength}"
-            );
-            Trace.Assert(
-                "text/plain".Equals(response.Content.Headers.ContentType.ToString()),
-                $"unexpected content type: \"{response.Content.Headers.ContentType}\""
-            );
-            var content = await response.Content.ReadAsStringAsync();
-            Trace.Assert("hola".Equals(content), $"unexpected content: \"{content}\"");
+            var urlBase = $"http://127.0.0.1:{port}";
+            {
+                var response = await client.GetAsync($"{urlBase}/hello");
+                response.EnsureSuccessStatusCode();
+                Trace.Assert(
+                    4 == response.Content.Headers.ContentLength,
+                    $"unexpected content length: {response.Content.Headers.ContentLength}"
+                );
+                Trace.Assert(
+                    "text/plain".Equals(response.Content.Headers.ContentType.ToString()),
+                    $"unexpected content type: \"{response.Content.Headers.ContentType}\""
+                );
+                var content = await response.Content.ReadAsStringAsync();
+                Trace.Assert("hola".Equals(content), $"unexpected content: \"{content}\"");
+            }
+
+            {
+                var length = 10 * 1024 * 1024;
+                var body = new byte[length];
+                new Random().NextBytes(body);
+
+                var content = new StreamContent(new MemoryStream(body));
+                var type = "application/octet-stream";
+                content.Headers.ContentType = new MediaTypeHeaderValue(type);
+
+                var response = await client.PostAsync($"{urlBase}/echo", content);
+                response.EnsureSuccessStatusCode();
+                Trace.Assert(
+                    length == response.Content.Headers.ContentLength,
+                    $"unexpected content length: {response.Content.Headers.ContentLength}"
+                );
+                Trace.Assert(
+                    type.Equals(response.Content.Headers.ContentType.ToString()),
+                    $"unexpected content type: \"{response.Content.Headers.ContentType}\""
+                );
+                var received = await response.Content.ReadAsByteArrayAsync();
+                Trace.Assert(body.SequenceEqual(received), "unexpected content");
+            }
         }
 
         public static int ReturnsPrimitiveInt()
