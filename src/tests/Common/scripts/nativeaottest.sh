@@ -15,7 +15,7 @@ wasm="$1/native/${exename}.wasm"
 mjs="$1/native/${exename}.mjs"
 
 if [ -e "$mjs" ]; then
-  node "$mjs" "${@:3}"
+  node --stack_trace_limit=200 "$mjs" "${@:3}"
 elif [ -e "$wasm" ]; then
   echo wasmtime run -S http "$wasm" "${@:3}"
   wasmtime run -S http "$wasm" "${@:3}"
