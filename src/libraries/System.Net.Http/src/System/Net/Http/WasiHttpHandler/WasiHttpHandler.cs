@@ -314,7 +314,7 @@ namespace System.Net.Http
                 }
                 else
                 {
-                    await WasiEventLoop.Register(future.Subscribe()).ConfigureAwait(false);
+                    await WasiEventLoop.RegisterWasiPollable(future.Subscribe()).ConfigureAwait(false);
                 }
             }
         }
@@ -463,14 +463,14 @@ namespace System.Net.Http
 
         private static class WasiEventLoop
         {
-            internal static Task Register(IPoll.Pollable pollable)
+            internal static Task RegisterWasiPollable(IPoll.Pollable pollable)
             {
                 var handle = pollable.Handle;
                 pollable.Handle = 0;
-                return CallRegister((Thread)null!, handle);
+                return CallRegisterWasiPollable((Thread)null!, handle);
 
-                [UnsafeAccessor(UnsafeAccessorKind.StaticMethod, Name = "Register")]
-                static extern Task CallRegister(Thread t, int handle);
+                [UnsafeAccessor(UnsafeAccessorKind.StaticMethod, Name = "RegisterWasiPollable")]
+                static extern Task CallRegisterWasiPollable(Thread t, int handle);
             }
         }
 
@@ -560,7 +560,7 @@ namespace System.Net.Http
                             if (buffer.Length == 0)
                             {
                                 await WasiEventLoop
-                                    .Register(stream.Subscribe())
+                                    .RegisterWasiPollable(stream.Subscribe())
                                     .ConfigureAwait(false);
                             }
                             else
@@ -697,7 +697,7 @@ namespace System.Net.Http
                     var count = (int)stream.CheckWrite();
                     if (count == 0)
                     {
-                        await WasiEventLoop.Register(stream.Subscribe()).ConfigureAwait(false);
+                        await WasiEventLoop.RegisterWasiPollable(stream.Subscribe()).ConfigureAwait(false);
                     }
                     else if (offset == limit)
                     {

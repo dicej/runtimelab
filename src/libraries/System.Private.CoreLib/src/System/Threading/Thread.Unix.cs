@@ -10,15 +10,16 @@ namespace System.Threading
 {
     public sealed partial class Thread
     {
+        // these methods are temporarily accessed via UnsafeAccessor from generated code until we have it in public API, probably in WASI preview3 and promises
 #if TARGET_WASI
-        internal static System.Threading.Tasks.Task Register(int handle)
+        internal static System.Threading.Tasks.Task RegisterWasiPollable(int handle)
         {
-            return WasiEventLoop.Register(handle);
+            return WasiEventLoop.RegisterWasiPollable(handle);
         }
 
-        internal static void Dispatch()
+        internal static void DispatchWasiEventLoop()
         {
-            WasiEventLoop.Dispatch();
+            WasiEventLoop.DispatchWasiEventLoop();
         }
 #endif
 

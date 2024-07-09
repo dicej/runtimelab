@@ -121,7 +121,7 @@ namespace LibraryWorld
             var task = TestHttpAsync(port);
             while (!task.IsCompleted)
             {
-                WasiEventLoop.Dispatch();
+                WasiEventLoop.DispatchWasiEventLoop();
             }
             var exception = task.Exception;
             if (exception is not null)
@@ -209,12 +209,12 @@ namespace LibraryWorld
 
     internal static class WasiEventLoop
     {
-        internal static void Dispatch()
+        internal static void DispatchWasiEventLoop()
         {
-            CallDispatch((Thread)null!);
+            CallDispatchWasiEventLoop((Thread)null!);
 
-            [UnsafeAccessor(UnsafeAccessorKind.StaticMethod, Name = "Dispatch")]
-            static extern void CallDispatch(Thread t);
+            [UnsafeAccessor(UnsafeAccessorKind.StaticMethod, Name = "DispatchWasiEventLoop")]
+            static extern void CallDispatchWasiEventLoop(Thread t);
         }
     }
 }

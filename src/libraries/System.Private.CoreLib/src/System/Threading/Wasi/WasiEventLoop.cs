@@ -11,14 +11,14 @@ namespace System.Threading
     {
         private static List<(IPoll.Pollable, TaskCompletionSource)> pollables = new();
 
-        internal static Task Register(int handle)
+        internal static Task RegisterWasiPollable(int handle)
         {
             var source = new TaskCompletionSource(TaskCreationOptions.AttachedToParent);
             pollables.Add((new IPoll.Pollable(new IPoll.Pollable.THandle(handle)), source));
             return source.Task;
         }
 
-        internal static void Dispatch()
+        internal static void DispatchWasiEventLoop()
         {
             ThreadPoolWorkQueue.Dispatch();
 
