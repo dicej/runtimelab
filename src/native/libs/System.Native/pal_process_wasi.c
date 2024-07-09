@@ -17,12 +17,6 @@
 
 #include <minipal/getexepath.h>
 
-#ifdef DEBUG
-#define DEBUGNOTRETURN __attribute__((noreturn))
-#else
-#define DEBUGNOTRETURN
-#endif
-
 int32_t SystemNative_ForkAndExecProcess(const char* filename,
                                       char* const argv[],
                                       char* const envp[],
