@@ -26,7 +26,7 @@ if (isMainThread) {
 
     // Spawn a worker thread to run the HTTP server and feed the port number
     // it's listening on back to us when ready:
-    let port = await new Promise((resolve, reject) => {
+    const port = await new Promise((resolve, reject) => {
         const worker = new Worker(new URL("./SharedLibrary.mjs", base));
         worker.on("message", resolve);
         worker.on("error", reject);
@@ -60,9 +60,18 @@ if (isMainThread) {
     // Run the HTTP server
     const server = http.createServer((req, res) => {
         if (req.method === "POST" && req.url === "/echo") {
-            res.writeHead(200, req.headers);
-            req.pipe(res).on("finish", () => {
-                res.end();
+            // Note that we buffer the request body here rather than pipe it
+            // directly to the response.  That's because, as of this writing,
+            // `WasiHttpHandler` sends the entire request body before reading
+            // any of the response body, which can lead to deadlock if the
+            // server is blocked on backpressure when sending the response body.
+            let chunks = [];
+            req.on("data", (chunk) => {
+                chunks.push(chunk);
+            });
+            req.on("end", () => {
+                res.writeHead(200, req.headers);
+                res.end(Buffer.concat(chunks));
             });
         } else {
             let status;
