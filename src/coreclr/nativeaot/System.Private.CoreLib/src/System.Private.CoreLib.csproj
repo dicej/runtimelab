@@ -351,7 +351,6 @@
     <Compile Include="$(MonoBclSourcesRoot)\System\Threading\ThreadPoolBoundHandle.Browser.Mono.cs" />
     <Compile Include="$(MonoBclSourcesRoot)\System\Threading\PreAllocatedOverlapped.Browser.Mono.cs" />
     <Compile Include="$(MonoBclSourcesRoot)\System\Threading\ThreadPool.Wasi.Mono.cs" />
-    <Compile Include="$(MonoBclSourcesRoot)\System\Threading\TimerQueue.Wasi.Mono.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -133,9 +133,8 @@ namespace LibraryWorld
         private static async Task TestHttpAsync(ushort port)
         {
             using var client = new HttpClient();
-            client.Timeout = Timeout.InfiniteTimeSpan;
-
             var urlBase = $"http://127.0.0.1:{port}";
+
             {
                 var response = await client.GetAsync($"{urlBase}/hello");
                 response.EnsureSuccessStatusCode();
@@ -172,6 +171,17 @@ namespace LibraryWorld
                 );
                 var received = await response.Content.ReadAsByteArrayAsync();
                 Trace.Assert(body.SequenceEqual(received), "unexpected content");
+            }
+            
+            using var impatientClient = new HttpClient();
+            impatientClient.Timeout = TimeSpan.FromMilliseconds(100);
+            try {
+                await impatientClient.GetAsync($"{urlBase}/slow-hello");
+                throw new Exception("request to /slow-hello endpoint should have timed out");
+            } catch (TaskCanceledException _) {
+                // The /slow-hello endpoint takes 10 seconds to return a
+                // response, whereas we've set a 100ms timeout, so this is
+                // expected.
             }
         }
 

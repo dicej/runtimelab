@@ -73,6 +73,16 @@ if (isMainThread) {
                 res.writeHead(200, req.headers);
                 res.end(Buffer.concat(chunks));
             });
+        } else if (req.method === "GET" && req.url === "/slow-hello") {
+            setTimeout(() => {
+                const body = "hola";
+                res
+                    .writeHead(200, {
+                        "content-length": Buffer.byteLength(body),
+                        "content-type": "text/plain",
+                    })
+                    .end(body);                
+            }, 10 * 1000);
         } else {
             let status;
             let body;
