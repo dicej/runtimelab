@@ -133,7 +133,15 @@ namespace LibraryWorld
         private static async Task TestHttpAsync(ushort port)
         {
             using var client = new HttpClient();
-            client.Timeout = Timeout.InfiniteTimeSpan;
+
+            Trace.Assert(client.Timeout.Equals(Timeout.InfiniteTimeSpan));
+
+            try {
+                client.Timeout = TimeSpan.FromSeconds(100);
+                throw new Exception("expected PlatformNotSupportedException when setting HttpClient.Timeout");
+            } catch (PlatformNotSupportedException e) {
+                // This is expected until `System.Threading.Timer` is implemented for WASI.
+            }
 
             var urlBase = $"http://127.0.0.1:{port}";
             {

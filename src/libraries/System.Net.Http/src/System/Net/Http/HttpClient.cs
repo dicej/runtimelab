@@ -16,7 +16,12 @@ namespace System.Net.Http
         #region Fields
 
         private static IWebProxy? s_defaultProxy;
+#if TARGET_WASI
+        // TODO: remove this WASI-specific code once `System.Threading.Timer` is supported
+        private static readonly TimeSpan s_defaultTimeout = Threading.Timeout.InfiniteTimeSpan;
+#else
         private static readonly TimeSpan s_defaultTimeout = TimeSpan.FromSeconds(100);
+#endif
         private static readonly TimeSpan s_maxTimeout = TimeSpan.FromMilliseconds(int.MaxValue);
         private static readonly TimeSpan s_infiniteTimeout = Threading.Timeout.InfiniteTimeSpan;
         private const HttpCompletionOption DefaultCompletionOption = HttpCompletionOption.ResponseContentRead;
@@ -106,6 +111,10 @@ namespace System.Net.Http
                 {
                     ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(value, TimeSpan.Zero);
                     ArgumentOutOfRangeException.ThrowIfGreaterThan(value, s_maxTimeout);
+#if TARGET_WASI
+                    // TODO: remove this WASI-specific code once `System.Threading.Timer` is supported
+                    throw new PlatformNotSupportedException("finite timeouts not yet supported on WASI");
+#endif
                 }
                 CheckDisposedOrStarted();
                 _timeout = value;
