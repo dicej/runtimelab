@@ -9,7 +9,7 @@ $ProgressPreference = "SilentlyContinue"
 
 Set-Location $InstallDir
 
-$WasmtimeVersion = "v21.0.1"
+$WasmtimeVersion = "v26.0.1"
 $WasmtimeFolderName = "wasmtime-$WasmtimeVersion-x86_64-windows"
 Invoke-WebRequest -Uri https://github.com/bytecodealliance/wasmtime/releases/download/v21.0.1/$WasmtimeFolderName.zip -OutFile wasmtime.zip
 Expand-Archive -LiteralPath wasmtime.zip -DestinationPath .
