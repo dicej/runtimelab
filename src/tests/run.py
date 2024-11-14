@@ -608,7 +608,7 @@ def setup_coredump_generation(host_os):
     """
     global coredump_pattern
 
-    if host_os == "osx":
+    if host_os == "osx" or "freebsd":
         coredump_pattern = subprocess.check_output("sysctl -n kern.corefile", shell=True).rstrip()
     elif host_os == "linux":
         with open("/proc/sys/kernel/core_pattern", "r") as f:
@@ -684,7 +684,7 @@ def print_info_from_coredump_file(host_os, arch, coredump_name, executable_name)
 
     command = ""
 
-    if host_os == "osx":
+    if host_os == "osx" or "freebsd":
         command = "lldb -c %s -b -o 'bt all' -o 'disassemble -b -p'" % coredump_name
     elif host_os == "linux":
         command = "gdb --batch -ex \"thread apply all bt full\" -ex \"disassemble /r $pc\" -ex \"quit\" %s %s" % (executable_name, coredump_name)
@@ -900,8 +900,8 @@ def setup_args(args):
 
     target_os = coreclr_setup_args.host_os
     # using the arg target_os always breaks the OSX tests
-    if coreclr_setup_args.target_os == "Browser":
-        target_os = "Browser"
+    if coreclr_setup_args.target_os == "browser":
+        target_os = "browser"
     if coreclr_setup_args.target_os == "wasi":
         target_os = "wasi"
 

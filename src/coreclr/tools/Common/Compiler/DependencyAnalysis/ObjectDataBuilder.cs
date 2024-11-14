@@ -256,6 +256,12 @@ namespace ILCompiler.DependencyAnalysis
             BinaryPrimitives.WriteUInt32LittleEndian(_data.AsSpan(offset), emit);
         }
 
+        public void AddReloc(Relocation reloc)
+        {
+            Debug.Assert(_relocs.Count == 0 || _relocs[^1].Offset < reloc.Offset);
+            _relocs.Add(reloc);
+        }
+
         public void EmitReloc(ISymbolNode symbol, RelocType relocType, int delta = 0)
         {
 #if DEBUG
@@ -289,7 +295,7 @@ namespace ILCompiler.DependencyAnalysis
                         }
                     }
                     break;
-                case RelocType.R_WASM_FUNCTION_OFFSET_I32:
+                case RelocType.R_WASM_FUNCTION_INDEX_I32:
                 case RelocType.IMAGE_REL_BASED_REL32:
                 case RelocType.IMAGE_REL_BASED_RELPTR32:
                 case RelocType.IMAGE_REL_BASED_ABSOLUTE:

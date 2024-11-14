@@ -5,13 +5,17 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
 using Internal.Runtime;
+using Internal.Runtime.Augments;
 
 // Disable: Filter expression is a constant. We know. We just can't do an unfiltered catch.
 #pragma warning disable 7095
 
+//
+// WASM exception handling.
+// See: https://github.com/dotnet/runtimelab/blob/feature/NativeAOT-LLVM/docs/design/coreclr/botr/nativeaot-wasm-exception-handling.md.
+//
 namespace System.Runtime
 {
-    // TODO-LLVM-EH: write and link a design document for this EH scheme. It is not terribly simple...
     internal static unsafe partial class EH
     {
         private const nuint UnwindIndexNotInTry = 0;
@@ -19,8 +23,11 @@ namespace System.Runtime
 
         [ThreadStatic]
         private static ExceptionDispatchData? t_lastDispatchedException;
+        [ThreadStatic]
+        private static CallFilterFrame* t_pLastCallFilterFrame;
 
         [RuntimeExport("RhpThrowEx")]
+        [MethodImpl(MethodImplOptions.NoInlining)]
         private static void RhpThrowEx(object exception)
         {
 #if INPLACE_RUNTIME
@@ -29,13 +36,14 @@ namespace System.Runtime
 #else
 #error Implement "throw null" in non-INPLACE_RUNTIME builds
 #endif
-            DispatchException(exception, 0);
+            DispatchException(exception, RhEHFrameType.RH_EH_FIRST_FRAME);
         }
 
         [RuntimeExport("RhpRethrow")]
-        private static void RhpRethrow(object pException)
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static void RhpRethrow(object exception)
         {
-            DispatchException(pException, RhEHFrameType.RH_EH_FIRST_RETHROW_FRAME);
+            DispatchException(exception, RhEHFrameType.RH_EH_FIRST_FRAME | RhEHFrameType.RH_EH_FIRST_RETHROW_FRAME);
         }
 
         // Note that this method cannot have any catch handlers as it manipulates the virtual unwind frames directly
@@ -43,36 +51,45 @@ namespace System.Runtime
         // all user code via separate noinline methods. It also cannot throw any exceptions as that would lead to
         // infinite recursion.
         //
+        [MethodImpl(MethodImplOptions.NoInlining)]
         private static void DispatchException(object exception, RhEHFrameType flags)
         {
-            WasmEHLogFirstPassEnter(exception, flags);
-
+            WasmEHLogFirstPassEnter(exception, (flags & RhEHFrameType.RH_EH_FIRST_RETHROW_FRAME) != 0);
             OnFirstChanceExceptionNoInline(exception);
-#if INPLACE_RUNTIME
-            Exception.InitializeExceptionStackFrameLLVM(exception, (int)flags);
-#else
-#error Make InitializeExceptionStackFrameLLVM into a classlib export
-#endif
 
             // Find the handler for this exception by virtually unwinding the stack of active protected regions.
-            VirtualUnwindFrame** pLastFrameRef = (VirtualUnwindFrame**)InternalCalls.RhpGetRawLastVirtualUnwindFrameRef();
-            VirtualUnwindFrame* pLastFrame = *pLastFrameRef;
-            VirtualUnwindFrame* pFrame = pLastFrame;
             nuint unwindCount = 0;
-            while (pFrame != null)
+            void* pFrameLimit = GetVirtualUnwindFrameLimit();
+            VirtualUnwindFrame* pFrame = GetLastVirtualUnwindFrame(skip: 2, pFrameLimit);
+            VirtualUnwindFrame* pFirstCatchFrame = null;
+            for (; pFrame != null; pFrame = GetPrevious(pFrame, pFrameLimit))
             {
-                EHClause clause;
-                EHTable table = new EHTable(pFrame->UnwindTable);
-                nuint index = pFrame->UnwindIndex;
+                nint ip = GetStackTraceIp(pFrame);
+                GetAppendStackFrame(exception)(exception, ip, (int)flags);
+                flags = 0;
+
+                void* pEHInfo = GetEHInfo(pFrame);
+                if (pEHInfo == null)
+                {
+                    continue;
+                }
+
+                nuint index = GetUnwindIndex(pFrame);
+                if (IsCatchUnwindIndex(index) && pFirstCatchFrame == null)
+                {
+                    pFirstCatchFrame = pFrame;
+                }
+
+                EHTable table = new EHTable(pEHInfo);
                 while (IsCatchUnwindIndex(index))
                 {
+                    EHClause clause;
                     nuint enclosingIndex = table.GetClauseInfo(index, &clause);
                     WasmEHLogEHTableEntry(pFrame, index, &clause);
 
                     if (clause.Filter != null)
                     {
-                        // Codegen will always allocate "pFrame" on the shadow stack at a zero offset.
-                        if (CallFilterFunclet(clause.Filter, exception, pFrame))
+                        if (CallFilterFunclet(clause.Filter, exception, pFrame, pFrameLimit))
                         {
                             goto FoundHandler;
                         }
@@ -88,9 +105,6 @@ namespace System.Runtime
                     index = enclosingIndex;
                     unwindCount++;
                 }
-
-                Debug.Assert(pFrame != pFrame->Prev);
-                pFrame = pFrame->Prev;
             }
 
         FoundHandler:
@@ -106,17 +120,20 @@ namespace System.Runtime
             // Thread this exception onto the list of currently active exceptions. We need to keep the managed exception
             // object alive during the second pass and using a thread static is the most straightforward way to achive
             // this. Additionally, not having to inspect the native exception in the second pass is better for code size.
-            VirtualUnwindFrame* pNextCatchFrame = SkipNotInTryCatchFrames(pLastFrame);
-            t_lastDispatchedException = new()
+            t_lastDispatchedException = new() // TODO-LLVM: this can fail with an OOM and lead to infinite recursion.
             {
                 Prev = t_lastDispatchedException,
                 ExceptionObject = exception,
                 RemainingUnwindCount = unwindCount,
-                NextCatchFrame = pNextCatchFrame,
-                NextCatchIndex = pNextCatchFrame->UnwindIndex
+                NextCatchFrame = pFirstCatchFrame,
+                NextCatchIndex = GetUnwindIndex(pFirstCatchFrame)
             };
 
-            *pLastFrameRef = SkipNotInTryFrames(pLastFrame);
+            if (!RuntimeAugments.PreciseVirtualUnwind)
+            {
+                SparseVirtualUnwindFrame** pLastFrameRef = SparseVirtualUnwindFrame.GetLastRef();
+                *pLastFrameRef = UnlinkSparseNotInTryFrames(*pLastFrameRef);
+            }
 
             // Initiate the second pass by throwing a native exception.
             WasmEHLog("Initiating the second pass via native throw", 2);
@@ -127,20 +144,34 @@ namespace System.Runtime
         private static void OnFirstChanceExceptionNoInline(object exception) => OnFirstChanceExceptionViaClassLib(exception);
 
         [MethodImpl(MethodImplOptions.NoInlining)]
-        private static bool CallFilterFunclet(void* pFunclet, object exception, void* pShadowFrame)
+        private static bool CallFilterFunclet(void* pFunclet, object exception, VirtualUnwindFrame* pFrame, void* pFrameLimit)
         {
-            WasmEHLogFilterEnter(pFunclet, RhEHClauseKind.RH_EH_CLAUSE_FILTER, pShadowFrame);
+            void* pOriginalShadowStack = GetOriginalShadowStack(pFrame);
+            WasmEHLogFilterEnter(pFunclet, RhEHClauseKind.RH_EH_CLAUSE_FILTER, pOriginalShadowStack);
+
+            CallFilterFrame callFilterFrame;
+            if (RuntimeAugments.PreciseVirtualUnwind)
+            {
+                callFilterFrame.CallFilterFuncletFrame = PreciseVirtualUnwindFrame.GetLast(0, pFrameLimit);
+                callFilterFrame.HandlerMethodFrame = (PreciseVirtualUnwindFrame*)pFrame;
+                callFilterFrame.Prev = t_pLastCallFilterFrame;
+                t_pLastCallFilterFrame = &callFilterFrame;
+            }
             bool result;
             try
             {
-                result = ((delegate*<void*, object, int>)pFunclet)(pShadowFrame, exception) != 0;
+                result = ((delegate*<void*, object, int>)pFunclet)(pOriginalShadowStack, exception) != 0;
             }
             catch when (true)
             {
                 result = false; // A filter that throws is treated as if it returned "continue search".
             }
-            WasmEHLogFilterExit(RhEHClauseKind.RH_EH_CLAUSE_FILTER, result, pShadowFrame);
+            if (RuntimeAugments.PreciseVirtualUnwind)
+            {
+                t_pLastCallFilterFrame = t_pLastCallFilterFrame->Prev;
+            }
 
+            WasmEHLogFilterExit(RhEHClauseKind.RH_EH_CLAUSE_FILTER, result, pOriginalShadowStack);
             return result;
         }
 
@@ -158,7 +189,7 @@ namespace System.Runtime
             Debug.Assert(lastException != null);
 
             VirtualUnwindFrame* pCatchFrame = lastException.NextCatchFrame;
-            Debug.Assert(pCatchFrame == *(VirtualUnwindFrame**)InternalCalls.RhpGetRawLastVirtualUnwindFrameRef());
+            Debug.Assert(pCatchFrame == GetLastVirtualUnwindFrame(skip: 1, GetVirtualUnwindFrameLimit()));
 
             // Have we reached the unwind destination of this exception?
             if (lastException.RemainingUnwindCount == 0)
@@ -206,19 +237,18 @@ namespace System.Runtime
             }
 
             // Maintain the consistency of the virtual unwind stack if we are unwinding out of this frame.
-            nuint enclosingCatchIndex = new EHTable(pCatchFrame->UnwindTable).GetClauseInfo(catchUnwindIndex);
-            if (enclosingCatchIndex == UnwindIndexNotInTry)
+            nuint enclosingCatchIndex = new EHTable(GetEHInfo(pCatchFrame)).GetClauseInfo(catchUnwindIndex);
+            if (!RuntimeAugments.PreciseVirtualUnwind && enclosingCatchIndex == UnwindIndexNotInTry)
             {
-                VirtualUnwindFrame** pLastFrameRef = (VirtualUnwindFrame**)InternalCalls.RhpGetRawLastVirtualUnwindFrameRef();
-                *pLastFrameRef = SkipUnwoundFrames(pCatchFrame);
+                RhpPopUnwoundSparseVirtualFrames();
             }
 
             if (!IsCatchUnwindIndex(enclosingCatchIndex))
             {
                 // This next frame is yet to be unwound, hence its index represents the actual unwind destination.
-                VirtualUnwindFrame* pNextCatchFrame = SkipNotInTryCatchFrames(pCatchFrame->Prev);
+                VirtualUnwindFrame* pNextCatchFrame = UnwindToNextCatchFrame(pCatchFrame);
                 lastException.NextCatchFrame = pNextCatchFrame;
-                lastException.NextCatchIndex = pNextCatchFrame->UnwindIndex;
+                lastException.NextCatchIndex = GetUnwindIndex(pNextCatchFrame);
             }
             else
             {
@@ -253,40 +283,39 @@ namespace System.Runtime
             return false;
         }
 
-        [RuntimeExport("RhpPopUnwoundVirtualFrames")]
-        private static void RhpPopUnwoundVirtualFrames()
+        private static VirtualUnwindFrame* UnwindToNextCatchFrame(VirtualUnwindFrame* pThisCatchFrame)
         {
-            VirtualUnwindFrame** pLastFrameRef = (VirtualUnwindFrame**)InternalCalls.RhpGetRawLastVirtualUnwindFrameRef();
-            *pLastFrameRef = SkipUnwoundFrames(*pLastFrameRef);
-        }
+            void* pFrameLimit = GetVirtualUnwindFrameLimit();
+            VirtualUnwindFrame* pFrame = GetPrevious(pThisCatchFrame, pFrameLimit);
+            Debug.Assert(pFrame != null);
+            while (GetEHInfo(pFrame) == null || !IsCatchUnwindIndex(GetUnwindIndex(pFrame)))
+            {
+                pFrame = GetPrevious(pFrame, pFrameLimit);
+            }
 
-        private static VirtualUnwindFrame* SkipUnwoundFrames(VirtualUnwindFrame* pFrame)
-        {
-            Debug.Assert(pFrame == *(VirtualUnwindFrame**)InternalCalls.RhpGetRawLastVirtualUnwindFrameRef());
-            WasmEHLog("Unlinking [" + ToHex(pFrame) + "] - top-level unwind", 2);
-            pFrame = pFrame->Prev;
-            pFrame = SkipNotInTryFrames(pFrame);
-
+            Debug.Assert(pFrame != null);
             return pFrame;
         }
 
-        private static VirtualUnwindFrame* SkipNotInTryFrames(VirtualUnwindFrame* pFrame)
+        [RuntimeExport("RhpPopUnwoundSparseVirtualFrames")]
+        private static void RhpPopUnwoundSparseVirtualFrames()
         {
+            SparseVirtualUnwindFrame** pLastFrameRef = SparseVirtualUnwindFrame.GetLastRef();
+            SparseVirtualUnwindFrame* pFrame = *pLastFrameRef;
+            WasmEHLog("Unlinking [" + ToHex(pFrame) + "] - top-level unwind", 2);
+            pFrame = pFrame->Prev;
+            pFrame = UnlinkSparseNotInTryFrames(pFrame);
+
+            *pLastFrameRef = pFrame;
+        }
+
+        private static SparseVirtualUnwindFrame* UnlinkSparseNotInTryFrames(SparseVirtualUnwindFrame* pFrame)
+        {
+            Debug.Assert(!RuntimeAugments.PreciseVirtualUnwind);
             Debug.Assert(pFrame != null);
             while (pFrame->UnwindIndex == UnwindIndexNotInTry)
             {
                 WasmEHLog("Unlinking [" + ToHex(pFrame) + "] - NotInTry", 2);
-                pFrame = pFrame->Prev;
-            }
-
-            return pFrame;
-        }
-
-        private static VirtualUnwindFrame* SkipNotInTryCatchFrames(VirtualUnwindFrame* pFrame)
-        {
-            Debug.Assert(pFrame != null);
-            while (!IsCatchUnwindIndex(pFrame->UnwindIndex))
-            {
                 pFrame = pFrame->Prev;
             }
 
@@ -310,6 +339,7 @@ namespace System.Runtime
         [RuntimeExport("RhpHandleUnhandledException")]
         private static void HandleUnhandledException(object exception)
         {
+            GetAppendStackFrame(exception)(exception, 0, 0); // Append JS frames to this unhandled exception for better diagnostics.
             OnUnhandledExceptionViaClassLib(exception);
 
             // We have to duplicate "UnhandledExceptionFailFastViaClasslib" because we cannot use code addresses to get helpers.
@@ -334,13 +364,249 @@ namespace System.Runtime
             FallbackFailFast(RhFailFastReason.UnhandledException, exception);
         }
 
+        // Stack trace support.
+        //
+        private static delegate*<object, IntPtr, int, void> GetAppendStackFrame(object exception)
+        {
+            // We use this more direct way of invoking "AppendExceptionStackFrame" to preserve more user frames in truncated traces.
+            nint pAppendStackFrame = exception.GetMethodTable()->GetClasslibFunction(ClassLibFunctionId.AppendExceptionStackFrame);
+            return (delegate*<object, IntPtr, int, void>)pAppendStackFrame;
+        }
+
+        [RuntimeExport("RhGetCurrentThreadStackTrace")]
+        [MethodImpl(MethodImplOptions.NoInlining)] // Ensures that the RhGetCurrentThreadStackTrace frame is always present
+        private static unsafe int RhGetCurrentThreadStackTrace(IntPtr[] outputBuffer)
+        {
+            Debug.Assert(RuntimeAugments.PreciseVirtualUnwind);
+
+            int count = 0;
+            void* pFrameLimit = PreciseVirtualUnwindFrame.GetLimit();
+            PreciseVirtualUnwindFrame* pFrame = PreciseVirtualUnwindFrame.GetLast(skipCount: 1, pFrameLimit);
+            CallFilterFrame* pFilterFrame = t_pLastCallFilterFrame;
+            while (pFrame != null)
+            {
+                nint ip;
+                if (pFilterFrame != null && pFrame == pFilterFrame->CallFilterFuncletFrame)
+                {
+                    // We need to report the filter funclets in stack traces. They will not show up as a frame on
+                    // the shadow stack because funclets don't have a shadow frame of their own. We also want to
+                    // skip the dispatcher frames.
+                    ip = PreciseVirtualUnwindFrame.GetStackTraceIp(pFilterFrame->HandlerMethodFrame);
+                    pFrame = PreciseVirtualUnwindFrame.GetPrevious(pFrame, pFrameLimit); // DispatchException.
+                    pFrame = PreciseVirtualUnwindFrame.GetPrevious(pFrame, pFrameLimit); // RhpThrowEx/RhpRethrow.
+                    pFilterFrame = pFilterFrame->Prev;
+                }
+                else
+                {
+                    ip = PreciseVirtualUnwindFrame.GetStackTraceIp(pFrame);
+                }
+
+                if (ip != 0)
+                {
+                    if (count < outputBuffer.Length)
+                    {
+                        outputBuffer[count] = ip;
+                    }
+                    count++;
+                }
+                pFrame = PreciseVirtualUnwindFrame.GetPrevious(pFrame, pFrameLimit);
+            }
+
+            return count <= outputBuffer.Length ? count : -count;
+        }
+
+        // Abstraction over the two types of virtual unwind frames.
+        //
+        private struct VirtualUnwindFrame { }
+
+        private static void* GetVirtualUnwindFrameLimit()
+        {
+            return RuntimeAugments.PreciseVirtualUnwind
+                ? PreciseVirtualUnwindFrame.GetLimit()
+                : SparseVirtualUnwindFrame.GetLimit();
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static VirtualUnwindFrame* GetLastVirtualUnwindFrame(int skip, void* pFrameLimit)
+        {
+            return RuntimeAugments.PreciseVirtualUnwind
+                ? (VirtualUnwindFrame*)PreciseVirtualUnwindFrame.GetLast(skip + 1, pFrameLimit)
+                : (VirtualUnwindFrame*)SparseVirtualUnwindFrame.GetLast();
+        }
+
+        private static VirtualUnwindFrame* GetPrevious(VirtualUnwindFrame* pFrame, void* pFrameLimit)
+        {
+            void* pPrevFrame = RuntimeAugments.PreciseVirtualUnwind
+                ? PreciseVirtualUnwindFrame.GetPrevious((PreciseVirtualUnwindFrame*)pFrame, pFrameLimit)
+                : SparseVirtualUnwindFrame.GetPrevious((SparseVirtualUnwindFrame*)pFrame);
+
+            Debug.Assert(pFrame != pPrevFrame);
+            return (VirtualUnwindFrame*)pPrevFrame;
+        }
+
+        private static void* GetEHInfo(VirtualUnwindFrame* pFrame)
+        {
+            return RuntimeAugments.PreciseVirtualUnwind
+                ? PreciseVirtualUnwindFrame.GetEHInfo((PreciseVirtualUnwindFrame*)pFrame)
+                : SparseVirtualUnwindFrame.GetEHInfo((SparseVirtualUnwindFrame*)pFrame);
+        }
+
+        private static nuint GetUnwindIndex(VirtualUnwindFrame* pFrame)
+        {
+            return RuntimeAugments.PreciseVirtualUnwind
+                ? PreciseVirtualUnwindFrame.GetUnwindIndex((PreciseVirtualUnwindFrame*)pFrame)
+                : SparseVirtualUnwindFrame.GetUnwindIndex((SparseVirtualUnwindFrame*)pFrame);
+        }
+
+        private static void* GetOriginalShadowStack(VirtualUnwindFrame* pFrame)
+        {
+            return RuntimeAugments.PreciseVirtualUnwind
+                ? PreciseVirtualUnwindFrame.GetOriginalShadowStack((PreciseVirtualUnwindFrame*)pFrame)
+                : SparseVirtualUnwindFrame.GetOriginalShadowStack((SparseVirtualUnwindFrame*)pFrame);
+        }
+
+        private static nint GetStackTraceIp(VirtualUnwindFrame* pFrame)
+        {
+            return RuntimeAugments.PreciseVirtualUnwind
+                ? PreciseVirtualUnwindFrame.GetStackTraceIp((PreciseVirtualUnwindFrame*)pFrame)
+                : SparseVirtualUnwindFrame.GetStackTraceIp((SparseVirtualUnwindFrame*)pFrame);
+        }
+
+        // These are present in each virtually unwindable frame (not just those with EH).
+        //
+        private struct PreciseVirtualUnwindFrame
+        {
+            public byte* UnwindInfo;
+
+            public static void* GetLimit()
+            {
+                return InternalCalls.RhpGetCurrentThreadShadowStackBottom();
+            }
+
+            [MethodImpl(MethodImplOptions.NoInlining)]
+            public static PreciseVirtualUnwindFrame* GetLast(int skipCount, void* pFrameLimit)
+            {
+                skipCount++; // Include this method.
+
+                var lastFrame = (PreciseVirtualUnwindFrame*)InternalCalls.RhpGetLastPreciseVirtualUnwindFrame();
+                while (skipCount > 0)
+                {
+                    lastFrame = GetPrevious(lastFrame, pFrameLimit);
+                    skipCount--;
+                }
+
+                return lastFrame;
+            }
+
+            public static PreciseVirtualUnwindFrame* GetPrevious(PreciseVirtualUnwindFrame* pFrame, void* pFrameLimit)
+            {
+                Debug.Assert(pFrame > pFrameLimit);
+
+                uint shadowFrameSize;
+                PreciseVirtualUnwindInfo.Parse(pFrame->UnwindInfo, &shadowFrameSize);
+                byte* pPreviousFrame = (byte*)pFrame - shadowFrameSize;
+                if (pPreviousFrame <= pFrameLimit)
+                {
+                    // We have reached top of the stack. Because the initial shadow stack alignment is large enough
+                    // to satisfy any overaligned frame, the first frame will never have any padding.
+                    Debug.Assert((nuint)pFrameLimit % sizeof(double) == 0);
+                    Debug.Assert(pFrameLimit == pPreviousFrame + sizeof(PreciseVirtualUnwindFrame));
+                    return null;
+                }
+                while (*(nuint*)pPreviousFrame == 0)
+                {
+                    pPreviousFrame -= sizeof(nuint); // Skip padding introduced by overaligned frames.
+                }
+
+                return (PreciseVirtualUnwindFrame*)pPreviousFrame;
+            }
+
+            public static void* GetEHInfo(PreciseVirtualUnwindFrame* pFrame)
+            {
+                void* pEHInfo;
+                PreciseVirtualUnwindInfo.Parse(pFrame->UnwindInfo, ppEHInfo: &pEHInfo);
+                return pEHInfo;
+            }
+
+            public static nuint GetUnwindIndex(PreciseVirtualUnwindFrame* pFrame)
+            {
+                Debug.Assert(GetEHInfo(pFrame) != null); // Only EH frames have the unwind index.
+                return *((nuint*)pFrame - 1);
+            }
+
+            public static void* GetOriginalShadowStack(PreciseVirtualUnwindFrame* pFrame)
+            {
+                // The precise frame is allocated on the logical bottom of the frame, while the original shadow stack
+                // points at its top.
+                uint shadowFrameSize;
+                PreciseVirtualUnwindInfo.Parse(pFrame->UnwindInfo, &shadowFrameSize);
+                return (byte*)pFrame + sizeof(PreciseVirtualUnwindFrame) - shadowFrameSize;
+            }
+
+            public static nint GetStackTraceIp(PreciseVirtualUnwindFrame* pFrame)
+            {
+                // The unwind info is our "IP" in the precise model (for visible frames).
+                bool hasStackTraceIp;
+                byte* pUnwindInfo = pFrame->UnwindInfo;
+                PreciseVirtualUnwindInfo.Parse(pUnwindInfo, pHasStackTraceIp: &hasStackTraceIp);
+                return hasStackTraceIp ? (nint)pUnwindInfo : 0;
+            }
+        }
+
         // These are pushed by codegen on the shadow stack for frames that have at least one region protected by a catch.
         //
-        private struct VirtualUnwindFrame
+        private struct SparseVirtualUnwindFrame
         {
-            public VirtualUnwindFrame* Prev;
+            public SparseVirtualUnwindFrame* Prev;
             public void* UnwindTable;
             public nuint UnwindIndex;
+
+            public static void* GetLimit()
+            {
+                return null;
+            }
+
+            public static SparseVirtualUnwindFrame** GetLastRef()
+            {
+                return (SparseVirtualUnwindFrame**)InternalCalls.RhpGetLastSparseVirtualUnwindFrameRef();
+            }
+
+            public static SparseVirtualUnwindFrame* GetLast()
+            {
+                return *GetLastRef();
+            }
+
+            public static SparseVirtualUnwindFrame* GetPrevious(SparseVirtualUnwindFrame* pFrame)
+            {
+                return pFrame->Prev;
+            }
+
+            public static void* GetEHInfo(SparseVirtualUnwindFrame* pFrame)
+            {
+                return pFrame->UnwindTable;
+            }
+
+            public static nuint GetUnwindIndex(SparseVirtualUnwindFrame* pFrame)
+            {
+                return pFrame->UnwindIndex;
+            }
+
+            public static void* GetOriginalShadowStack(SparseVirtualUnwindFrame* pFrame)
+            {
+                // The sparse virtual unwind frame is always allocated at the top of the frame by codegen.
+                return pFrame;
+            }
+
+            public static nint GetStackTraceIp(SparseVirtualUnwindFrame* pFrame)
+            {
+#if TARGET_BROWSER
+                int wasmFunctionIndex = Unsafe.ReadUnaligned<int>((byte*)pFrame->UnwindTable - sizeof(int));
+                int wasmFunctionIndexWithBias = Exception.GetBiasedWasmFunctionIndex(wasmFunctionIndex);
+                return wasmFunctionIndexWithBias;
+#else
+                return 0;
+#endif
+            }
         }
 
         private sealed class ExceptionDispatchData
@@ -352,6 +618,13 @@ namespace System.Runtime
             public nuint NextCatchIndex;
         }
 
+        private unsafe struct CallFilterFrame
+        {
+            public PreciseVirtualUnwindFrame* CallFilterFuncletFrame;
+            public PreciseVirtualUnwindFrame* HandlerMethodFrame;
+            public CallFilterFrame* Prev;
+        }
+
         private unsafe struct EHClause
         {
             public MethodTable* ClauseType;
@@ -360,71 +633,50 @@ namespace System.Runtime
 
         private unsafe struct EHTable
         {
-            private const nuint MetadataFilter = 1;
-            private const nuint MetadataClauseTypeFormat = 2;
-            private const int MetadataShift = 1;
-            private const nuint MetadataMask = ~(1u << MetadataShift);
+            private const nuint MetadataLargeFormat = 1;
+            private const nuint MetadataFilter = 1 << 1;
+            private const int MetadataShift = 2;
 
-            private const nuint FormatClauseType = 0;
-            private const nuint FormatSmall = 1;
-            private const nuint FormatLarge = 2;
-            private const nuint FormatMask = 3;
+            private readonly byte* _pEHTable;
+            private readonly bool _isLargeFormat;
 
-            private readonly void* _pEHTable;
-            private readonly nuint _format;
-
-            public EHTable(void* pUnwindTable)
+            public EHTable(void* pEHInfo)
             {
-                _pEHTable = (void*)((nuint)pUnwindTable & ~FormatMask);
-                _format = (nuint)pUnwindTable & FormatMask;
+                _pEHTable = (byte*)pEHInfo;
+                _isLargeFormat = (*(byte*)pEHInfo & MetadataLargeFormat) != 0;
             }
 
             public readonly nuint GetClauseInfo(nuint index, EHClause* pClause = null)
             {
-                nuint metadata;
-                nuint enclosingIndex = GetMetadata(index, &metadata);
+                Debug.Assert(IsCatchUnwindIndex(index));
+                nuint largeFormatEntrySize = (nuint)(sizeof(uint) + sizeof(void*));
+                nuint smallFormatEntrySize = (nuint)(sizeof(byte) + sizeof(void*));
+
+                nuint zeroBasedIndex = index - UnwindIndexBase;
+                nuint metadata = _isLargeFormat
+                    ? Unsafe.ReadUnaligned<uint>(_pEHTable + zeroBasedIndex * largeFormatEntrySize)
+                    : Unsafe.ReadUnaligned<byte>(_pEHTable + zeroBasedIndex * smallFormatEntrySize);
+
                 if (pClause != null)
                 {
-                    if (metadata == MetadataClauseTypeFormat)
+                    nuint value = _isLargeFormat
+                        ? Unsafe.ReadUnaligned<nuint>(_pEHTable + zeroBasedIndex * largeFormatEntrySize + sizeof(uint))
+                        : Unsafe.ReadUnaligned<nuint>(_pEHTable + zeroBasedIndex * smallFormatEntrySize + sizeof(byte));
+
+                    if ((metadata & MetadataFilter) != 0)
                     {
-                        pClause->Filter = null;
-                        pClause->ClauseType = (MethodTable*)_pEHTable;
-                    }
-                    else if ((metadata & MetadataFilter) != 0)
-                    {
-                        pClause->Filter = ((void**)_pEHTable)[index - UnwindIndexBase];
+                        pClause->Filter = (void*)value;
                         pClause->ClauseType = null;
                     }
                     else
                     {
                         pClause->Filter = null;
-                        pClause->ClauseType = ((MethodTable**)_pEHTable)[index - UnwindIndexBase];
+                        pClause->ClauseType = (MethodTable*)value;
                     }
                 }
 
+                nuint enclosingIndex = metadata >> MetadataShift;
                 return enclosingIndex;
-            }
-
-            private readonly nuint GetMetadata(nuint index, nuint* pMetadata)
-            {
-                Debug.Assert(IsCatchUnwindIndex(index));
-                nuint metadata;
-                switch (_format)
-                {
-                    case FormatClauseType:
-                        *pMetadata = MetadataClauseTypeFormat;
-                        return UnwindIndexNotInTry;
-                    case FormatSmall:
-                        metadata = ((byte*)_pEHTable)[-(nint)(index - UnwindIndexBase + 1)];
-                        break;
-                    default:
-                        Debug.Assert(_format == FormatLarge);
-                        metadata = ((uint*)_pEHTable)[-(nint)(index - UnwindIndexBase + 1)];
-                        break;
-                }
-
-                *pMetadata = metadata & MetadataMask;
-                return metadata >> MetadataShift;
             }
         }
 
@@ -459,9 +711,9 @@ namespace System.Runtime
         }
 
         [Conditional("ENABLE_NOISY_WASM_EH_LOG")]
-        private static void WasmEHLogFirstPassEnter(object exception, RhEHFrameType flags)
+        private static void WasmEHLogFirstPassEnter(object exception, bool isFirstRethrowFrame)
         {
-            string kind = (flags & RhEHFrameType.RH_EH_FIRST_RETHROW_FRAME) != 0 ? "Rethrowing" : "Throwing";
+            string kind = isFirstRethrowFrame ? "Rethrowing" : "Throwing";
             WasmEHLog(kind + ": [" + exception.GetType() + "]", 1, "\n");
         }
 
@@ -524,6 +776,97 @@ namespace System.Runtime
             while (value != 0);
 
             return new string(pCurrent + 1, 0, (int)(pLast - pCurrent));
+        }
+    }
+
+    internal static unsafe class PreciseVirtualUnwindInfo
+    {
+        private static nuint GetUnwindInfoViaAbsoluteValueLimit() => /* This value will be substituted by the ILC. */ 0;
+
+        public static int Parse(byte* pUnwindInfo, uint* pShadowFrameSize = null, void** pFunctionPointer = null, void** ppEHInfo = null, bool* pHasStackTraceIp = null)
+        {
+            Debug.Assert(GetUnwindInfoViaAbsoluteValueLimit() > 0);
+
+            if ((nuint)pUnwindInfo < GetUnwindInfoViaAbsoluteValueLimit())
+            {
+                if (pShadowFrameSize != null)
+                {
+                    *pShadowFrameSize = (uint)pUnwindInfo * (uint)sizeof(void*);
+                }
+                if (pFunctionPointer != null)
+                {
+                    *pFunctionPointer = null;
+                }
+                if (ppEHInfo != null)
+                {
+                    *ppEHInfo = null;
+                }
+                if (pHasStackTraceIp != null)
+                {
+                    *pHasStackTraceIp = false;
+                }
+                return 0;
+            }
+
+            const uint HasExtendedInfoFlag = 1 << 7;
+            const uint HasFunctionPointerFlag = 1 << 6;
+            const uint AllFlags = HasExtendedInfoFlag | HasFunctionPointerFlag;
+            const uint SmallShadowFrameSizeInSlotsLimit = byte.MaxValue & ~AllFlags;
+            const uint IsHiddenExtendedFlag = 1 << 7;
+            const uint SmallEHInfoSizeLimit = byte.MaxValue & ~IsHiddenExtendedFlag;
+
+            byte* pCurrent = pUnwindInfo;
+            uint smallShadowFrameSizeAndFlags = *pCurrent++;
+            uint shadowFrameSizeInSlots = smallShadowFrameSizeAndFlags & ~AllFlags;
+            if (shadowFrameSizeInSlots >= SmallShadowFrameSizeInSlotsLimit)
+            {
+                shadowFrameSizeInSlots = Unsafe.ReadUnaligned<uint>(pCurrent);
+                pCurrent += sizeof(uint);
+            }
+            if (pShadowFrameSize != null)
+            {
+                *pShadowFrameSize = shadowFrameSizeInSlots * (uint)sizeof(void*);
+            }
+
+            void* functionPointer = null;
+            if ((smallShadowFrameSizeAndFlags & HasFunctionPointerFlag) != 0)
+            {
+                functionPointer = (void*)Unsafe.ReadUnaligned<nuint>(pCurrent);
+                pCurrent += sizeof(void*);
+            }
+            if (pFunctionPointer != null)
+            {
+                *pFunctionPointer = functionPointer;
+            }
+
+            void* pEHInfo = null;
+            bool hasStackTraceIp = true;
+            if ((smallShadowFrameSizeAndFlags & HasExtendedInfoFlag) != 0)
+            {
+                uint smallEHInfoSizeAndExtendedFlags = *pCurrent++;
+                uint ehInfoSize = smallEHInfoSizeAndExtendedFlags & ~IsHiddenExtendedFlag;
+                if (ehInfoSize >= SmallEHInfoSizeLimit)
+                {
+                    ehInfoSize = Unsafe.ReadUnaligned<uint>(pCurrent);
+                    pCurrent += sizeof(uint);
+                }
+                if (ehInfoSize != 0)
+                {
+                    pEHInfo = pCurrent;
+                    pCurrent += ehInfoSize;
+                }
+                hasStackTraceIp = (smallEHInfoSizeAndExtendedFlags & IsHiddenExtendedFlag) == 0;
+            }
+            if (ppEHInfo != null)
+            {
+                *ppEHInfo = pEHInfo;
+            }
+            if (pHasStackTraceIp != null)
+            {
+                *pHasStackTraceIp = hasStackTraceIp;
+            }
+
+            return (int)(pCurrent - pUnwindInfo);
         }
     }
 }

@@ -14,6 +14,7 @@ using Internal.Runtime.TypeLoader;
 using Internal.TypeSystem;
 
 using Debug = System.Diagnostics.Debug;
+using Unsafe = System.Runtime.CompilerServices.Unsafe;
 using ReflectionExecution = Internal.Reflection.Execution.ReflectionExecution;
 
 namespace Internal.StackTraceMetadata
@@ -23,7 +24,7 @@ namespace Internal.StackTraceMetadata
     /// compiler-generated metadata blob to enhance quality of exception call stacks
     /// in situations where symbol information is not available.
     /// </summary>
-    internal static class StackTraceMetadata
+    internal static partial class StackTraceMetadata
     {
         /// <summary>
         /// Module address-keyed map of per-module method name resolvers.
@@ -70,6 +71,7 @@ namespace Internal.StackTraceMetadata
             isStackTraceHidden = false;
 
             // We haven't found information in the stack trace metadata tables, but maybe reflection will have this
+            methodStartAddress = ReflectionExecution.ConvertStackTraceIpToFunctionPointer(methodStartAddress);
             if (IsReflectionExecutionAvailable() && ReflectionExecution.TryGetMethodMetadataFromStartAddress(methodStartAddress,
                 out MetadataReader reader,
                 out TypeDefinitionHandle typeHandle,
@@ -125,6 +127,7 @@ namespace Internal.StackTraceMetadata
             }
 
             // We haven't found information in the stack trace metadata tables, but maybe reflection will have this
+            methodStartAddress = ReflectionExecution.ConvertStackTraceIpToFunctionPointer(methodStartAddress);
             if (IsReflectionExecutionAvailable() && ReflectionExecution.TryGetMethodMetadataFromStartAddress(methodStartAddress,
                 out MetadataReader reader,
                 out TypeDefinitionHandle typeHandle,
@@ -245,6 +248,11 @@ namespace Internal.StackTraceMetadata
         /// </summary>
         private sealed class StackTraceMetadataCallbacksImpl : StackTraceMetadataCallbacks
         {
+            public override IntPtr TryConvertFunctionPointerToStackTraceIp(IntPtr functionPointer)
+            {
+                return ConvertFunctionPointerToStackTraceIp(functionPointer);
+            }
+
             public override DiagnosticMethodInfo TryGetDiagnosticMethodInfoFromStartAddress(nint methodStartAddress)
             {
                 return GetDiagnosticMethodInfoFromStartAddressIfAvailable(methodStartAddress);
@@ -259,7 +267,7 @@ namespace Internal.StackTraceMetadata
         /// <summary>
         /// Method name resolver for a single binary module
         /// </summary>
-        private sealed class PerModuleMethodNameResolver
+        private sealed partial class PerModuleMethodNameResolver
         {
             /// <summary>
             /// Start address of the module in question.
@@ -370,8 +378,7 @@ namespace Internal.StackTraceMetadata
                         currentMethodInst = new Handle(HandleType.ConstantStringArray, (int)NativePrimitiveDecoder.DecodeUnsigned(ref pCurrent)).ToConstantStringArrayHandle(Reader);
                     }
 
-                    void* pMethod = ReadRelPtr32(pCurrent);
-                    pCurrent += sizeof(int);
+                    pCurrent += ReadMethodIp(pCurrent, out void* pMethod);
 
                     Debug.Assert((nint)pMethod > handle.OsModuleBase);
                     int methodRva = (int)((nint)pMethod - handle.OsModuleBase);
@@ -385,9 +392,6 @@ namespace Internal.StackTraceMetadata
                         Signature = currentSignature,
                         GenericArguments = currentMethodInst,
                     };
-
-                    static void* ReadRelPtr32(byte* address)
-                        => address + *(int*)address;
                 }
 
                 Debug.Assert(current == _stacktraceDatas.Length);
@@ -421,7 +425,12 @@ namespace Internal.StackTraceMetadata
 
             public struct StackTraceData : IComparable<StackTraceData>
             {
+#if TARGET_WASM
+                // Both WASM function indices and precise virtual unwind info addresses are not aligned.
+                private const int IsHiddenFlag = 1 << 31;
+#else
                 private const int IsHiddenFlag = 0x2;
+#endif
 
                 private readonly int _rvaAndIsHiddenBit;
 

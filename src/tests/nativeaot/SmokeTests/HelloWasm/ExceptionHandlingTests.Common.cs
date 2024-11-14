@@ -11,6 +11,7 @@ using System.Runtime.InteropServices;
 
 internal unsafe partial class Program
 {
+    internal static bool ExitOnFirstTestFailure = Environment.GetCommandLineArgs().AsSpan().Contains("-exit");
     internal static bool Success = true;
 
     private static bool TestTryCatch()
@@ -39,6 +40,8 @@ internal unsafe partial class Program
         TestUnconditionalThrowInCatch();
 
         TestThrowInMutuallyProtectingHandlers();
+
+        TestDisjointMutuallyProtectingHandlers();
 
         TestExceptionInGvmCall();
 
@@ -425,6 +428,66 @@ internal unsafe partial class Program
         }
 
         PassTest();
+    }
+
+    private static void TestDisjointMutuallyProtectingHandlers()
+    {
+        int index = 0;
+        bool result = true;
+        [MethodImpl(MethodImplOptions.NoInlining)] void At(int expected) => result &= index++ == expected;
+
+        StartTest("TestDisjointMutuallyProtectingHandlers");
+        try
+        {
+            At(0);
+            throw new InvalidOperationException();
+        }
+        catch (NotSupportedException)
+        {
+            At(-1);
+        }
+        catch (InvalidOperationException)
+        {
+            try
+            {
+                At(1);
+                throw new NullReferenceException();
+            }
+            catch (NotSupportedException)
+            {
+                At(-1);
+            }
+            catch (NullReferenceException)
+            {
+                try
+                {
+                    At(2);
+                    throw new Exception();
+                }
+                catch
+                {
+                    At(3);
+                }
+                finally
+                {
+                    At(4);
+                }
+            }
+            catch
+            {
+                At(-1);
+            }
+        }
+        catch (Exception)
+        {
+            At(-1);
+        }
+        finally
+        {
+            At(5);
+        }
+
+        EndTest(result);
     }
 
     private static void TestExceptionInGvmCall()
@@ -1989,7 +2052,13 @@ internal unsafe partial class Program
     {
         Success = false;
         PrintLine("Failed.");
-        if (failMessage != null) PrintLine(failMessage + "-");
+        if (failMessage != null)
+            PrintLine(failMessage + "-");
+
+        if (ExitOnFirstTestFailure)
+        {
+            Environment.Exit(-1);
+        }
     }
 
     public static void PrintString(string s)

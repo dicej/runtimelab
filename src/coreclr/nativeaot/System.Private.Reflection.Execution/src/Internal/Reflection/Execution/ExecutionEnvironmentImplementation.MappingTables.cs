@@ -2,6 +2,7 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System.Reflection.Runtime.General;
+using System.Runtime.CompilerServices;
 using System.Threading;
 
 using global::Internal.Metadata.NativeFormat;
@@ -443,8 +444,11 @@ namespace Internal.Reflection.Execution
             public readonly uint Offset;
         }
 
-        private struct FunctionPointersToOffsets
+        private partial struct FunctionPointersToOffsets
         {
+#if TARGET_BROWSER
+            public RuntimeAugments.StackTraceIpAndFunctionPointer[] StackTraceIpMap;
+#endif
             public FunctionPointerOffsetPair[] Data;
 
             public bool TryGetOffsetsRange(IntPtr functionPointer, out int firstParserOffsetIndex, out int lastParserOffsetIndex)
@@ -637,6 +641,7 @@ namespace Internal.Reflection.Execution
             functionPointerToOffsetInInvokeMap.Data = functionPointers.ToArray();
             Array.Sort(functionPointerToOffsetInInvokeMap.Data);
 
+            InitializeIpToFunctionPointerMap(ref functionPointerToOffsetInInvokeMap);
             return functionPointerToOffsetInInvokeMap;
         }
 

@@ -137,14 +137,29 @@ void Llvm::annotateFunctions()
             {
                 llvmFunc->addFnAttr(llvm::Attribute::NoInline);
             }
+
+            // The runtime stack trace logic relies on a 1-to-1 correspondence between WASM (and therefore LLVM)
+            // frames and virtual unwind frames; it uses this to determine when to stop appending stack frames.
+            // We therefore cannot let LLVM inline methods with virtual unwind frames (~= with catch handlers).
+            // TODO-LLVM-StackTrace: do we need to apply this to (finally) funclets too?
+            if (m_sparseVirtualUnwindFrameLclNum != BAD_VAR_NUM)
+            {
+                llvmFunc->addFnAttr(llvm::Attribute::NoInline);
+            }
         }
 
         if (_compiler->opts.OptimizationEnabled())
         {
-            if (!m_anyReturns || (_compiler->opts.compCodeOpt == Compiler::SMALL_CODE))
+            if (!m_anyReturnsViaLowering || (_compiler->opts.compCodeOpt == Compiler::SMALL_CODE))
             {
                 assert(!llvmFunc->hasFnAttribute(llvm::Attribute::OptimizeNone));
                 llvmFunc->addFnAttr(llvm::Attribute::OptimizeForSize);
+            }
+
+            if ((_compiler->info.compFlags & CORINFO_FLG_FORCEINLINE) != 0)
+            {
+                // LLVM's "alwaysinline" is stronger than the CLR's 'AggressiveInlining'; use "inlinehint" instead.
+                llvmFunc->addFnAttr(llvm::Attribute::InlineHint);
             }
 
             // Mark the shadow stack dereferenceable.
@@ -240,7 +255,7 @@ void Llvm::initializeShadowStack()
     }
     else
     {
-        shadowStackValue = getRootLlvmFunction()->getArg(0);
+        shadowStackValue = getRootLlvmFunction()->getArg(SHADOW_STACK_ARG_INDEX);
     }
 
     unsigned alignment = m_shadowFrameAlignment;
@@ -248,6 +263,15 @@ void Llvm::initializeShadowStack()
     {
         JITDUMP("Aligning the shadow frame to %u bytes:\n", alignment);
         assert(isPow2(alignment));
+
+        // Zero the padding that may be introduced by the code below. This serves two purposes:
+        // 1. We don't leave "random" pointers on the shadow stack.
+        // 2. We allow precise virtual unwinding out of overaligned frames, by skipping the zeroed padding.
+        unsigned maxPaddingSize = alignment - DEFAULT_SHADOW_STACK_ALIGNMENT;
+        llvm::Align existingAlign = llvm::Align(DEFAULT_SHADOW_STACK_ALIGNMENT);
+        Value* memsetInst = _builder.CreateMemSet(
+            shadowStackValue, _builder.getInt8(0), _builder.getInt32(maxPaddingSize), existingAlign);
+        JITDUMPEXEC(displayValue(memsetInst));
 
         // IR taken from what Clang generates for "__builtin_align_up".
         Value* shadowStackIntValue = _builder.CreatePtrToInt(shadowStackValue, getIntPtrLlvmType());
@@ -357,7 +381,8 @@ void Llvm::generateUnwindBlocks()
     // Generate the unwind blocks used to catch native exceptions during the second pass.
     // We generate these before the rest of the code because throwing calls need a certain
     // amount of pieces filled in (in particular, "catchswitch"es in the Wasm EH model).
-    m_EHRegionsInfo = new (_compiler->getAllocator(CMK_Codegen)) EHRegionInfo[_compiler->compHndBBtabCount]();
+    CompAllocator alloc = _compiler->getAllocator(CMK_Codegen);
+    m_EHRegionsInfo = new (alloc) EHRegionInfo[_compiler->compHndBBtabCount]();
 
     struct FunctionData
     {
@@ -380,10 +405,35 @@ void Llvm::generateUnwindBlocks()
         });
     }
 
+    // The main loop will need to map an outermost mutually protecting region to the innermost. While usually
+    // mutually protecting handlers form a contiguous 'run' in the table, this is not guaranteed, and disjoint
+    // regions, or regions nested inside the respective handlers can 'break up' the run.
+    jitstd::vector<unsigned> innermostMutuallyProtectingRegionMap(_compiler->compHndBBtabCount, -1, alloc);
+    for (unsigned ehIndex = 0; ehIndex < _compiler->compHndBBtabCount; ehIndex++)
+    {
+        EHblkDsc* ehDsc = _compiler->ehGetDsc(ehIndex);
+        if (!ehDsc->HasCatchHandler())
+        {
+            continue; // Of no interest.
+        }
+
+        unsigned innermostEHIndex = innermostMutuallyProtectingRegionMap[ehIndex];
+        if (innermostEHIndex == -1)
+        {
+            innermostEHIndex = ehIndex;
+            innermostMutuallyProtectingRegionMap[ehIndex] = innermostEHIndex;
+        }
+
+        unsigned outerEHIndex = ehDsc->ebdEnclosingTryIndex;
+        if ((outerEHIndex != EHblkDsc::NO_ENCLOSING_INDEX) && ehDsc->ebdIsSameTry(_compiler, outerEHIndex))
+        {
+            innermostMutuallyProtectingRegionMap[outerEHIndex] = innermostEHIndex;
+        }
+    }
+
     // There is no meaningful source location we can attach to the unwind blocks. None of them are "user" code.
     llvm::DILocation* unwindBlocksDebugLoc = getArtificialDebugLocation();
-    jitstd::vector<FunctionData> functionData(
-        _compiler->compFuncCount(), FunctionData{}, _compiler->getAllocator(CMK_Codegen));
+    jitstd::vector<FunctionData> functionData(_compiler->compFuncCount(), FunctionData{}, alloc);
 
     // Note the iteration order: outer -> inner.
     for (unsigned ehIndex = _compiler->compHndBBtabCount - 1; ehIndex != -1; ehIndex--)
@@ -391,6 +441,13 @@ void Llvm::generateUnwindBlocks()
         EHblkDsc* ehDsc = _compiler->ehGetDsc(ehIndex);
         if (!isReachable(ehDsc->ExFlowBlock()))
         {
+            continue;
+        }
+
+        EHRegionInfo* pEHRegionInfo = &getEHRegionInfo(ehIndex);
+        if (pEHRegionInfo->UnwindBlock != nullptr)
+        {
+            // Already emitted this part of the unwind sequence for mutually protecting handlers.
             continue;
         }
 
@@ -552,23 +609,16 @@ void Llvm::generateUnwindBlocks()
             _builder.CreateIntrinsic(llvm::Intrinsic::wasm_get_exception, {}, catchPadInst);
         }
 
-        // Eagerly initialize the unwind block to emit calls below.
-        getEHRegionInfo(ehIndex).UnwindBlock = unwindLlvmBlock;
+        // Eagerly initialize the unwind block to emit the calls below.
+        pEHRegionInfo->UnwindBlock = unwindLlvmBlock;
 
         if (ehDsc->HasCatchHandler())
         {
-            // Find the full set of mutually protecting handlers we have. Since we are generating things outer-to-inner,
-            // we are guaranteed to capture them all here.
-            unsigned innerEHIndex = ehIndex;
-            while ((innerEHIndex > 0) && ehDsc->ebdIsSameTry(_compiler, innerEHIndex - 1))
+            // Generate the full set of mutually protecting handlers we have, inner (first) to outer (last).
+            unsigned hndEHIndex = innermostMutuallyProtectingRegionMap[ehIndex];
+            while (hndEHIndex <= ehIndex)
             {
-                innerEHIndex--;
-                getEHRegionInfo(innerEHIndex).UnwindBlock = unwindLlvmBlock;
-            }
-
-            for (unsigned hndEHIndex = innerEHIndex; hndEHIndex <= ehIndex; hndEHIndex++)
-            {
-                EHblkDsc* hndDsc = _compiler->ehGetDsc(hndEHIndex);
+                EHRegionInfo* pHndRegionInfo = &getEHRegionInfo(hndEHIndex);
 
                 // Call the runtime to determine whether this catch should handle the exception. Note how we must do so
                 // even if we know the catch handler is statically unreachable. This is both because the runtime assumes
@@ -579,7 +629,7 @@ void Llvm::generateUnwindBlocks()
                 unsigned hndUnwindIndex = (m_unwindIndexMap != nullptr) ? m_unwindIndexMap->Bottom(hndEHIndex)
                                                                         : UNWIND_INDEX_NOT_IN_TRY;
                 Value* caughtValue = emitHelperCall(CORINFO_HELP_LLVM_EH_CATCH, getIntPtrConst(hndUnwindIndex));
-                getEHRegionInfo(hndEHIndex).CatchArgValue = caughtValue;
+                pHndRegionInfo->CatchArgValue = caughtValue;
 
                 // Yes if we get not-"null" back, otherwise continue unwinding.
                 Value* callCatchValue = _builder.CreateIsNotNull(caughtValue);
@@ -596,9 +646,11 @@ void Llvm::generateUnwindBlocks()
                 }
                 else
                 {
+                    pHndRegionInfo->UnwindBlock = unwindLlvmBlock;
                     continueUnwindLlvmBlock = createInlineLlvmBlock();
                 }
 
+                EHblkDsc* hndDsc = _compiler->ehGetDsc(hndEHIndex);
                 if (isReachable(hndDsc->ebdHndBeg))
                 {
                     llvm::BasicBlock* catchLlvmBlock = getFirstLlvmBlockForBlock(hndDsc->ebdHndBeg);
@@ -610,13 +662,12 @@ void Llvm::generateUnwindBlocks()
                 }
 
                 _builder.SetInsertPoint(continueUnwindLlvmBlock);
+                hndEHIndex = hndDsc->ebdEnclosingTryIndex;
             }
-
-            ehIndex = innerEHIndex;
         }
         else if (ehDsc->HasFinallyHandler())
         {
-            emitCallOrInvoke(getLlvmFunctionForIndex(ehDsc->ebdFuncIndex), getShadowStack());
+            emitCallOrInvoke(getLlvmFunctionForIndex(ehDsc->ebdFuncIndex), getShadowStack(), CSF_FUNCLET);
             emitUnwindToOuterHandlerFromFault();
         }
         else
@@ -1772,7 +1823,8 @@ void Llvm::buildCall(GenTreeCall* call)
     }
 
     llvm::FunctionCallee llvmFuncCallee = consumeCallTarget(call);
-    llvm::CallBase* callValue = emitCallOrInvoke(llvmFuncCallee, AsRef(argVec), mayPhysicallyThrow(call));
+    CallSiteFacts callSiteFacts = getCallSiteFactsForCall(call);
+    llvm::CallBase* callValue = emitCallOrInvoke(llvmFuncCallee, AsRef(argVec), callSiteFacts);
 
     if (JitConfig.JitGcStress())
     {
@@ -2063,6 +2115,7 @@ void Llvm::buildCatchArg(GenTree* catchArg)
 void Llvm::buildReturn(GenTree* node)
 {
     assert(node->OperIs(GT_RETURN, GT_RETFILT));
+    assert(m_anyReturnsViaLowering || !node->OperIs(GT_RETURN));
 
     if (node->OperIs(GT_RETFILT) && _compiler->ehGetBlockHndDsc(CurrentBlock())->HasFaultHandler())
     {
@@ -2236,7 +2289,7 @@ void Llvm::buildCallFinally(BasicBlock* block)
     // Other backends will simply skip generating the second block, while we will branch to it.
     //
     Function* finallyLlvmFunc = getLlvmFunctionForIndex(getLlvmFunctionIndexForBlock(block->GetTarget()));
-    emitCallOrInvoke(finallyLlvmFunc, getShadowStack());
+    emitCallOrInvoke(finallyLlvmFunc, getShadowStack(), CSF_FUNCLET);
 
     // Some tricky EH flow configurations can make the ALWAYS part of the pair unreachable without
     // marking "block" "BBF_RETLESS_CALL". Detect this case by checking if the next block is reachable
@@ -2443,7 +2496,8 @@ void Llvm::emitJumpToThrowHelper(Value* jumpCondValue, CorInfoHelpFunc helperFun
 
         // For code with throw helper blocks, create and use the shared helper block for raising the exception.
         llvm::BasicBlock* throwLlvmBlock;
-        ThrowHelperKey throwBlockKey{_compiler->bbThrowIndex(CurrentBlock()), helperFunc};
+        Compiler::AcdKeyDesignator dsg = Compiler::AcdKeyDesignator::KD_NONE;
+        ThrowHelperKey throwBlockKey{_compiler->bbThrowIndex(CurrentBlock(), &dsg), helperFunc};
         if (!m_throwHelperBlocksMap.Lookup(throwBlockKey, &throwLlvmBlock))
         {
             LlvmBlockRange* currentLlvmBlocks = getCurrentLlvmBlocks();
@@ -2548,6 +2602,7 @@ llvm::CallBase* Llvm::emitHelperCall(CorInfoHelpFunc helperFunc, ArrayRef<Value*
     });
 
     llvm::CallBase* call;
+    CallSiteFacts callSiteFacts = getCallSiteFactsForHelper(helperFunc);
     if (helperCallHasShadowStackArg(helperFunc))
     {
         Value* shadowStackArg = getShadowStackForCallee(canEmitHelperCallAsShadowTailCall(helperFunc));
@@ -2558,11 +2613,11 @@ llvm::CallBase* Llvm::emitHelperCall(CorInfoHelpFunc helperFunc, ArrayRef<Value*
             args.Push(sigArg);
         }
 
-        call = emitCallOrInvoke(helperLlvmFunc, AsRef(args));
+        call = emitCallOrInvoke(helperLlvmFunc, AsRef(args), callSiteFacts);
     }
     else
     {
-        call = emitCallOrInvoke(helperLlvmFunc, sigArgs);
+        call = emitCallOrInvoke(helperLlvmFunc, sigArgs, callSiteFacts);
     }
 
     return call;
@@ -2573,9 +2628,10 @@ bool Llvm::canEmitHelperCallAsShadowTailCall(CorInfoHelpFunc helperFunc)
     assert(helperCallHasShadowStackArg(helperFunc));
 
     // Right now the check on whether the call is in a "tail" position is simply that it won't return.
+    INDEBUG(const char* reasonWhyNot);
     if (Compiler::s_helperCallProperties.AlwaysThrow(helperFunc) &&
         canEmitCallAsShadowTailCall(getCurrentProtectedRegionIndex() != EHblkDsc::NO_ENCLOSING_INDEX,
-                                    isCurrentContextInFilter()))
+                                    isCurrentContextInFilter() DEBUGARG(&reasonWhyNot)))
     {
         return true;
     }
@@ -2583,14 +2639,9 @@ bool Llvm::canEmitHelperCallAsShadowTailCall(CorInfoHelpFunc helperFunc)
     return false;
 }
 
-llvm::CallBase* Llvm::emitCallOrInvoke(llvm::Function* callee, ArrayRef<Value*> args)
+llvm::CallBase* Llvm::emitCallOrInvoke(llvm::FunctionCallee callee, ArrayRef<Value*> args, CallSiteFacts callSiteFacts)
 {
-    return emitCallOrInvoke(callee, args, !callee->doesNotThrow());
-}
-
-llvm::CallBase* Llvm::emitCallOrInvoke(llvm::FunctionCallee callee, ArrayRef<Value*> args, bool isThrowingCall)
-{
-    Function* llvmFunc = llvm::dyn_cast<Function>(callee.getCallee());
+    INDEBUG(verifyFactsCollectedAboutCalls(callSiteFacts));
     llvm::BasicBlock* catchLlvmBlock = getUnwindLlvmBlockForCurrentInvoke();
 
     llvm::SmallVector<llvm::OperandBundleDef, 1> bundles{};
@@ -2604,6 +2655,7 @@ llvm::CallBase* Llvm::emitCallOrInvoke(llvm::FunctionCallee callee, ArrayRef<Val
     }
 
     llvm::CallBase* callInst;
+    bool isThrowingCall = (callSiteFacts & CSF_NO_THROW) == 0;
     if (isThrowingCall && (catchLlvmBlock != nullptr) && (m_ehModel != CorInfoLlvmEHModel::Emulated))
     {
         llvm::BasicBlock* nextLlvmBlock = createInlineLlvmBlock();
@@ -2789,6 +2841,42 @@ FunctionType* Llvm::createFunctionTypeForHelper(CorInfoHelpFunc helperFunc)
     return llvmFuncType;
 }
 
+CallSiteFacts Llvm::getCallSiteFactsForCall(GenTreeCall* call)
+{
+    CallSiteFacts facts = CSF_NONE;
+    if (!mayPhysicallyThrow(call))
+    {
+        facts |= CSF_NO_THROW;
+
+#ifdef DEBUG
+        // This fact is currently only used for validation, hence only set in DEBUG.
+        if (!mayVirtuallyUnwind(call))
+        {
+            facts |= CSF_NO_VIRTUAL_UNWIND;
+        }
+#endif // DEBUG
+    }
+    return facts;
+}
+
+CallSiteFacts Llvm::getCallSiteFactsForHelper(CorInfoHelpFunc helperFunc)
+{
+    CallSiteFacts facts = CSF_NONE;
+    if (!helperCallMayPhysicallyThrow(helperFunc))
+    {
+        facts |= CSF_NO_THROW;
+
+#ifdef DEBUG
+        // This fact is currently only used for validation, hence only set in DEBUG.
+        if (!helperCallMayVirtuallyUnwind(helperFunc))
+        {
+            facts |= CSF_NO_VIRTUAL_UNWIND;
+        }
+#endif // DEBUG
+    }
+    return facts;
+}
+
 void Llvm::annotateHelperFunction(CorInfoHelpFunc helperFunc, Function* llvmFunc)
 {
     if (!llvmFunc->getReturnType()->isVoidTy())
@@ -2896,7 +2984,7 @@ void Llvm::emitUnwindToOuterHandler()
     {
         Function* wasmRethrowLlvmFunc =
             llvm::Intrinsic::getDeclaration(&m_context->Module, llvm::Intrinsic::wasm_rethrow);
-        emitCallOrInvoke(wasmRethrowLlvmFunc);
+        emitCallOrInvoke(wasmRethrowLlvmFunc, {}, CSF_NONE);
         _builder.CreateUnreachable();
     }
     else
@@ -2925,8 +3013,9 @@ void Llvm::emitUnwindToOuterHandlerFromFault()
     EHblkDsc* ehDsc = _compiler->ehGetDsc(ehIndex);
     assert(ehDsc->HasFinallyOrFaultHandler());
 
-    // Pop the virtual unwind frame if this is the outermost fault that uses the unwind index.
-    if ((m_unwindIndexMap != nullptr) && (m_unwindIndexMap->Bottom(ehIndex) == UNWIND_INDEX_NOT_IN_TRY_CATCH))
+    // Pop the sparse virtual unwind frame if this is the outermost fault that uses the unwind index.
+    if ((m_sparseVirtualUnwindFrameLclNum != BAD_VAR_NUM) &&
+        (m_unwindIndexMap->Bottom(ehIndex) == UNWIND_INDEX_NOT_IN_TRY_CATCH))
     {
         if ((ehDsc->ebdEnclosingTryIndex == EHblkDsc::NO_ENCLOSING_INDEX) ||
             (m_unwindIndexMap->Bottom(ehDsc->ebdEnclosingTryIndex) != UNWIND_INDEX_NOT_IN_TRY_CATCH))
@@ -3464,3 +3553,28 @@ void Llvm::displayValue(Value* value)
     value->print(llvm::outs());
     printf("\n");
 }
+
+#ifdef DEBUG
+void Llvm::verifyFactsCollectedAboutCalls(CallSiteFacts callSiteFacts)
+{
+    if ((callSiteFacts & CSF_FUNCLET) != 0)
+    {
+        // Funclets inherit their properties from the handlers they represent, which are hard to query and not useful
+        // to validate since they don't represent "new" code.
+        return;
+    }
+
+    // We may introduce violations in dead EH code that we don't prune both because it's difficult to eliminate dead EH,
+    // and because we simply don't compute reachability for some of these things (e. g. faults that will never unwind).
+    if (getCurrentHandlerIndex() != EHblkDsc::NO_ENCLOSING_INDEX)
+    {
+        // TODO-LLVM: fix this in a better way... we're losing a lot of coverage here.
+        return;
+    }
+
+    if ((callSiteFacts & CSF_NO_VIRTUAL_UNWIND) == 0)
+    {
+        assert(m_anyVirtuallyUnwindableCalleesViaLowering != BooleanFact::False);
+    }
+}
+#endif

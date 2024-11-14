@@ -130,7 +130,7 @@ The .NET Foundation licenses this file to you under the MIT license.
     <IlcLlvmTarget Condition="'$(_targetOS)' == 'wasi'">wasm32-unknown-wasip2</IlcLlvmTarget>
     <IlcWasmStackSize>1048576</IlcWasmStackSize> <!-- 1MB -->
     <IlcWasmStackSize Condition="'$(EmccStackSize)' != ''">$(EmccStackSize)</IlcWasmStackSize>
-    <IlcWasmGlobalBase>1024</IlcWasmGlobalBase> <!-- This value is also hardcoded in the compiler -->
+    <IlcWasmGlobalBase>1024</IlcWasmGlobalBase>
     <IlcLlvmExceptionHandlingModel Condition="'$(WasmEnableExceptionHandling)' == 'true'">wasm</IlcLlvmExceptionHandlingModel>
     <IlcLlvmExceptionHandlingModel Condition="'$(IlcLlvmExceptionHandlingModel)' == '' and '$(targetOS)' == 'browser'">cpp</IlcLlvmExceptionHandlingModel>
     <IlcLlvmExceptionHandlingModel Condition="'$(IlcLlvmExceptionHandlingModel)' == ''">emulated</IlcLlvmExceptionHandlingModel>
@@ -334,6 +334,8 @@ The .NET Foundation licenses this file to you under the MIT license.
       <IlcArg Include="--codegenopt:LlvmExceptionHandlingModel=$(IlcLlvmExceptionHandlingModel)" />
       <IlcArg Condition="'$(IlcLlvmTarget)' != ''" Include="--codegenopt:Target=$(IlcLlvmTarget)" />
       <IlcArg Condition="'$(IlcMaxLlvmModuleCount)' != ''" Include="--codegenopt:MaxLlvmModuleCount=$(IlcMaxLlvmModuleCount)" />
+      <IlcArg Condition="'$(IlcWasmGlobalBase)' != ''" Include="--wasm-global-base:$(IlcWasmGlobalBase)" />
+      <IlcArg Condition="'$(IlcWasmMethodLevelVirtualUnwindModel)' != ''" Include="--wasm-method-level-virtual-unwind-model:$(IlcWasmMethodLevelVirtualUnwindModel)" />
 
       <IlcArg Condition="$(IlcDisableReflection) == 'true'" Include="--feature:System.Reflection.IsReflectionExecutionAvailable=false" />
 
@@ -431,11 +433,12 @@ The .NET Foundation licenses this file to you under the MIT license.
     <PropertyGroup Condition="'$(_targetOS)' == 'browser'">
       <CompileWasmArgs Condition="'$(IlcLlvmExceptionHandlingModel)' == 'cpp'">$(CompileWasmArgs) -mllvm -enable-emscripten-cxx-exceptions</CompileWasmArgs>
 
-      <ScriptExt Condition="'$(OS)' == 'Windows_NT'">.bat</ScriptExt>
+      <EmccScriptExt Condition="'$(OS)' == 'Windows_NT'">.bat</EmccScriptExt>
+      <EmccScriptExt Condition="'$(OS)' != 'Windows_NT'"></EmccScriptExt>
       <WasmCompilerPath Condition="'$(EMSDK)' != ''">&quot;$(EMSDK)/upstream/bin/clang++&quot;</WasmCompilerPath>
       <WasmCompilerPath Condition="'$(EMSDK)' == ''">&quot;$(EmscriptenSdkToolsPath)bin/clang++&quot;</WasmCompilerPath>
-      <WasmLinkerPath Condition="'$(EMSDK)' != ''">&quot;$(EMSDK)/upstream/emscripten/emcc$(ScriptExt)&quot;</WasmLinkerPath>
-      <WasmLinkerPath Condition="'$(EMSDK)' == ''">&quot;$(EmscriptenSdkToolsPath)emscripten/emcc$(ScriptExt)&quot;</WasmLinkerPath>
+      <WasmLinkerPath Condition="'$(EMSDK)' != ''">&quot;$(EMSDK)/upstream/emscripten/emcc$(EmccScriptExt)&quot;</WasmLinkerPath>
+      <WasmLinkerPath Condition="'$(EMSDK)' == ''">&quot;$(EmscriptenSdkToolsPath)emscripten/emcc$(EmccScriptExt)&quot;</WasmLinkerPath>
     </PropertyGroup>
 
    <PropertyGroup Condition="'$(_targetOS)' == 'wasi'">
@@ -545,32 +548,36 @@ The .NET Foundation licenses this file to you under the MIT license.
     </ItemGroup>
 
     <ItemGroup>
+      <_WasiComponentImports Include="$(IlcFrameworkNativePath)*.wit" />
+
       <NativeLibrary Include="$(IlcFrameworkNativePath)libSystem.Native.a" />
       <NativeLibrary Include="$(IlcFrameworkNativePath)libSystem.Native.TimeZoneData.a" Condition="'$(InvariantTimezone)' != 'true'" />
       <NativeLibrary Include="$(IlcFrameworkNativePath)libSystem.Native.TimeZoneData.Disabled.a" Condition="'$(InvariantTimezone)' == 'true'" />
-      <NativeLibrary Condition="'$(IlcIsLibLikeApp)' != 'true'" Include="$(IlcSdkPath)libbootstrapper.o" />
-      <NativeLibrary Condition="'$(IlcIsLibLikeApp)' == 'true'" Include="$(IlcSdkPath)libbootstrapperdll.o" />
+      <NativeLibrary Include="$(IlcSdkPath)libbootstrapper.o" Condition="'$(IlcIsLibLikeApp)' != 'true'" />
+      <NativeLibrary Include="$(IlcSdkPath)libbootstrapperdll.o" Condition="'$(IlcIsLibLikeApp)' == 'true'" />
       <NativeLibrary Include="$(IlcSdkPath)libPortableRuntime.a" />
       <NativeLibrary Include="$(IlcSdkPath)libstandalonegc-disabled$(LibFileExt)" />
-      <NativeLibrary Condition="'$(IlcLlvmExceptionHandlingModel)' == 'cpp'" Include="$(IlcSdkPath)libCppExceptionHandling.a" />
-      <NativeLibrary Condition="'$(IlcLlvmExceptionHandlingModel)' == 'wasm'" Include="$(IlcSdkPath)libWasmExceptionHandling.a" />
-      <NativeLibrary Condition="'$(IlcLlvmExceptionHandlingModel)' == 'emulated'" Include="$(IlcSdkPath)libEmulatedExceptionHandling.a" />
-      <_WasiComponentImports Include="$(IlcFrameworkNativePath)*.wit" />
+      <NativeLibrary Include="$(IlcSdkPath)libCppExceptionHandling.a" Condition="'$(IlcLlvmExceptionHandlingModel)' == 'cpp'" />
+      <NativeLibrary Include="$(IlcSdkPath)libWasmExceptionHandling.a" Condition="'$(IlcLlvmExceptionHandlingModel)' == 'wasm'" />
+      <NativeLibrary Include="$(IlcSdkPath)libEmulatedExceptionHandling.a" Condition="'$(IlcLlvmExceptionHandlingModel)' == 'emulated'" />
 
       <!-- wasi-sdk clang wants forward slashes, emscripten doesn't care -->
       <CustomLinkerArg Include="@(NativeLibrary->'&quot;%(Identity)&quot;'->Replace(&quot;\&quot;, &quot;/&quot;))" />
       <CustomLinkerArg Include="@(NativeObjects->'&quot;%(Identity)&quot;'->Replace(&quot;\&quot;, &quot;/&quot;))" />
+      <!-- The canary function should be last in the linked output. But adding it to Native[Library|Object] runs into https://github.com/dotnet/msbuild/issues/5937. -->
+      <CustomLinkerArg Include="&quot;$(IlcSdkPath.Replace('\', '/'))libStackTraceIpCanary.o&quot;" Condition="'$(_targetOS)' == 'browser'" />
       <CustomLinkerArg Include="@(_WasiComponentImports->Replace('\', '/')->'-Wl,--component-type,&quot;%(Identity)&quot;')" />
       <CustomLinkerArg Include="-o &quot;$(NativeBinary.Replace(&quot;\&quot;, &quot;/&quot;))&quot;" />
       <CustomLinkerArg Condition="'$(NativeDebugSymbols)' == 'true'" Include="-g3" />
       <CustomLinkerArg Condition="'$(NativeDebugSymbols)' != 'true'" Include="-Wl,--strip-all" />
-      <CustomLinkerArg Condition="'$(NativeDebugSymbols)' != 'true'" Include="-Wl,--compress-relocations" />
+      <!-- TODO-LLVM: https://github.com/dotnet/runtimelab/issues/2752. -->
+      <!--<CustomLinkerArg Condition="'$(NativeDebugSymbols)' != 'true'" Include="-Wl,compress-relocations" />-->
       <!-- see https://github.com/emscripten-core/emscripten/issues/16836 for the issue that means we have to force the linker to include these symbols before LTO -->
       <!--<CustomLinkerArg Condition="'$(Optimize)' != 'true'" Include="$(WasmOptimizationSetting) -flto" /> -->
       <CustomLinkerArg Condition="'$(IlcLlvmTarget)' != ''" Include="-target $(IlcLlvmTarget)" />
     </ItemGroup>
 
-    <ItemGroup Condition = "'$(_targetOS)' == 'browser'" >
+    <ItemGroup Condition="'$(_targetOS)' == 'browser'" >
       <CustomLinkerArg Include="--js-library &quot;$(IlcFrameworkNativePath)pal_random.lib.js&quot;" Condition="'$(DotNetJsApi)' != 'true'" />
       <CustomLinkerArg Condition="'$(WasmHtmlTemplate)' != ''" Include="--shell-file &quot;$(WasmHtmlTemplate)&quot;" />
       <CustomLinkerArg Condition="'$(ExportsFile)' != '' and '$([System.IO.File]::ReadAllText($(ExportsFile)))' != ''" Include="-s EXPORTED_FUNCTIONS=@&quot;$(ExportsFile)&quot;" />
@@ -592,7 +599,7 @@ The .NET Foundation licenses this file to you under the MIT license.
       <Output TaskParameter="Lines" ItemName="CustomLinkerArgExport" />
     </ReadLinesFromFile>
 
-    <ItemGroup Condition ="'$(_targetOS)' == 'wasi'" >
+    <ItemGroup Condition="'$(_targetOS)' == 'wasi'" >
       <CustomLinkerArg Include="--sysroot=&quot;$(WASI_SDK_PATH.Replace(&quot;\&quot;, &quot;/&quot;))/share/wasi-sysroot&quot;" />
       <CustomLinkerArg Include="@(CustomLinkerArgExport->'-Wl,--export=%(Identity)')" />
       <!-- TODO-LLVM: change to 'warn-unresolved-symbols' once we have a WASI SDK with https://github.com/llvm/llvm-project/pull/78643. -->
